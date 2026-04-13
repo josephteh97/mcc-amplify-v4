@@ -1,0 +1,30 @@
+{
+  "doors": {
+    "single": {
+      "family": "M_Single-Flush",
+      "symbols": {
+        "800": "0800 x 2100mm",
+        "900": "0900 x 2100mm",
+        "1000": "1000 x 2100mm"
+      }
+    },
+    "double": {
+      "family": "M_Double-Flush",
+      "symbols": {
+        "1800": "1800 x 2100mm"
+      }
+    }
+  },
+  "windows": {
+    "fixed": {
+      "family": "M_Fixed",
+      "symbols": {
+        "1200x1500": "1200 x 1500mm"
+      }
+    }
+  },
+  "walls": {
+    "interior": "Generic - 200mm",
+    "exterior": "Generic - 300mm"
+  }
+}

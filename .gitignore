@@ -1,0 +1,542 @@
+# ============================================
+# Amplify Floor Plan AI - .gitignore
+# ============================================
+# Place this file in the root: mcc-amplify-ai/.gitignore
+
+# ============================================
+# CRITICAL: API KEYS AND SECRETS
+# ============================================
+# NEVER commit these files - they contain sensitive information!
+
+# Environment files with API keys
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+.env.test
+
+# Configuration files with secrets
+**/config.json
+!**/config.example.json
+!**/config.sample.json
+
+# API key files
+**/api_keys.txt
+**/secrets.txt
+**/*_secret*
+**/*_key*
+**/.secrets/
+
+# ============================================
+# PYTHON
+# ============================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# ============================================
+# NODE.JS / JAVASCRIPT
+# ============================================
+
+# Dependencies
+node_modules/
+jspm_packages/
+
+# npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Package lock files (optional - some teams commit these)
+# Uncomment if you don't want to track them
+# package-lock.json
+# yarn.lock
+
+# Build outputs
+dist/
+dist-ssr/
+build/
+*.local
+
+# Cache directories
+.npm
+.eslintcache
+.node_repl_history
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# ============================================
+# C# / .NET
+# ============================================
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio cache/options
+.vs/
+.vscode/
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio profiler
+*.psess
+*.vsp
+*.vspx
+*.sap
+
+# ReSharper
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+# NuGet
+*.nupkg
+*.snupkg
+**/packages/*
+!**/packages/build/
+*.nuget.props
+*.nuget.targets
+
+# MSBuild Binary and Structured Log
+*.binlog
+
+# ============================================
+# MACHINE LEARNING MODELS
+# ============================================
+
+# Large model files (use Git LFS if needed)
+*.pt
+*.pth
+*.onnx
+*.pb
+*.h5
+*.pkl
+*.pickle
+*.model
+*.weights
+
+# Model weights directory
+**/weights/*.pt
+**/weights/*.pth
+**/models/*.pt
+**/models/*.pth
+
+# Training data
+**/datasets/raw/*
+**/datasets/processed/*
+**/datasets/annotated/*
+!**/.gitkeep
+
+# Training outputs
+**/training_outputs/
+**/checkpoints/
+**/tensorboard/
+
+# ============================================
+# DATA DIRECTORIES
+# ============================================
+
+# Uploaded files
+linux_server/data/uploads/*
+linux_server/data/processed/*
+linux_server/data/models/rvt/*
+linux_server/data/models/gltf/*
+linux_server/data/models/revit_transactions/*
+linux_server/data/cache/*
+
+# Keep directory structure with .gitkeep
+!linux_server/data/uploads/.gitkeep
+!linux_server/data/processed/.gitkeep
+!linux_server/data/models/rvt/.gitkeep
+!linux_server/data/models/gltf/.gitkeep
+!linux_server/data/models/revit_transactions/.gitkeep
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Windows output
+windows_server/output/*
+!windows_server/output/.gitkeep
+
+# ============================================
+# LOGS
+# ============================================
+
+# Log files
+*.log
+logs/
+*.pid
+
+# Specific log directories
+linux_server/logs/*.log
+linux_server/logs/*.pid
+windows_server/csharp_service/logs/*.log
+windows_server/python_service/logs/*.log
+
+# Keep log directories
+!linux_server/logs/.gitkeep
+!windows_server/csharp_service/logs/.gitkeep
+!windows_server/python_service/logs/.gitkeep
+
+# ============================================
+# OPERATING SYSTEM
+# ============================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ============================================
+# IDE & EDITORS
+# ============================================
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+.history/
+
+# JetBrains IDEs (PyCharm, IntelliJ, etc.)
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+Session.vim
+Sessionx.vim
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+
+# ============================================
+# CONDA / VIRTUAL ENVIRONMENTS
+# ============================================
+
+# Conda
+.conda/
+*.conda
+conda-meta/
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# ============================================
+# TEMPORARY FILES
+# ============================================
+
+# Temporary directories
+tmp/
+temp/
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+
+# ============================================
+# PDF / IMAGE PROCESSING
+# ============================================
+
+# Temporary PDF processing files
+*.pdf.cache
+*.pdf.tmp
+
+# ============================================
+# REVIT / CAD
+# ============================================
+
+# Revit backup files
+*.rvt.backup
+*.0001.rvt
+*.0002.rvt
+*.0003.rvt
+*.0004.rvt
+
+# Revit journals
+journal.*.txt
+
+# AutoCAD backup files
+*.bak
+*.dwl
+*.dwl2
+*.dwg.lock
+
+# ============================================
+# TESTING
+# ============================================
+
+# Test outputs
+test-results/
+test_output/
+coverage/
+
+# ============================================
+# DOCKER (if used)
+# ============================================
+
+# Docker volumes
+docker-compose.override.yml
+.docker/
+
+# ============================================
+# MISCELLANEOUS
+# ============================================
+
+# Archive files
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+
+# Large binary files
+*.iso
+*.exe
+*.dll
+*.app
+
+# Compressed files
+*.gz
+*.bz2
+*.xz
+
+# ============================================
+# PROJECT SPECIFIC
+# ============================================
+
+# Sample/test floor plans (if you don't want to commit them)
+# Uncomment if needed:
+# tests/sample_plans/*.pdf
+# tests/sample_plans/*.jpg
+
+# Generated documentation
+docs/_build/
+docs/.doctrees/
+
+# Deployment artifacts
+deploy/
+deployment/
+
+# ============================================
+# EXCEPTIONS - Files to ALWAYS include
+# ============================================
+
+# Keep example configuration files
+!.env.example
+!config.example.json
+!config.sample.json
+
+# Keep .gitkeep files to preserve directory structure
+!.gitkeep
+
+# Keep README files
+!README.md
+!README.txt
+
+# Keep requirement files
+!requirements.txt
+!environment.yml
+!package.json
+
+# Keep .trae plan files
+!.trae
+.trae/*
+
+# keep model.cs.backup files
+!**/*.cs.backup_*
+*.backup_*
+
+# ============================================
+# NOTES
+# ============================================
+#
+# To check what will be committed:
+#   git status
+#
+# To see ignored files:
+#   git status --ignored
+#
+# To force add an ignored file (use carefully!):
+#   git add -f filename
+#
+# To check if a file is ignored:
+#   git check-ignore -v filename
+#
+claude_key.txt
+backend/google_key.txt
+google_key.txt
+
+## AI Programmer
+.claude/
+.trae/
+2026-04-13-165816-1-read-the-file-thoroughly-and-carefully-2-com.txt
+
+

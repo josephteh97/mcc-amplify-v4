@@ -1,0 +1,134 @@
+# requirements.txt (merged & cleaned – February 2026)
+# Removed: ifcopenshell, ezdxf (no IFC/DXF needed)
+
+# ----------------
+# Web Framework
+# ----------------
+fastapi==0.128.7
+uvicorn[standard]==0.24.0.post1   # minor patch bump if desired (safe)
+python-multipart==0.0.6
+websockets==12.0
+python-jose[cryptography]==3.3.0
+
+# ----------------
+# AI & Machine Learning
+# ----------------
+openai==1.57.0            # NVIDIA NIM (DeepSeek chat) + optional GPT-4 Vision; >=1.35 required for httpx>=0.28 compat (proxies arg removed)
+ultralytics==8.4.9      # YOLOv8 for element detection
+torch==2.10.0+cu128              # PyTorch (required by YOLO)
+torchvision==0.25.0+cu128       # Computer vision utilities
+
+# ----------------
+# Computer Vision
+# ----------------
+opencv-python>=4.11.0.86   # Image processing
+Pillow==10.1.0            # → Pillow (capitalized consistently)
+pytesseract==0.3.10       # OCR for scale detection
+paddleocr==3.4.0        # Alternative OCR (better for Asian text)
+
+# ----------------
+# PDF Processing
+# ----------------
+PyMuPDF==1.23.7           # PDF to image / fitz
+pdf2image==1.16.3         # PDF rasterization
+PyPDF2==3.0.1             # PDF text extraction
+camelot-py[cv]==0.11.0    # Table / vector extraction from PDF
+
+# ----------------
+# 3D Processing & Geometry
+# ----------------
+numpy==1.26.2             # Numerical computations
+open3d==0.18.0            # 3D geometry processing
+trimesh==4.0.5            # Mesh operations
+scipy==1.11.4             # Scientific computing
+pygltflib==1.16.1         # glTF export for web viewer
+
+# ----------------
+# Database
+# ----------------
+sqlalchemy==2.0.23
+alembic==1.12.1
+psycopg2-binary==2.9.9    # PostgreSQL driver
+
+# ----------------
+# HTTP & Networking
+# ----------------
+requests==2.31.0          # Sync HTTP (Revit server, etc.)
+httpx==0.25.2             # Async HTTP client
+aiohttp==3.9.1            # Alternative async HTTP
+
+# ----------------
+# Data Validation
+# ----------------
+pydantic==2.5.2
+pydantic-settings==2.1.0
+
+# ----------------
+# File Operations & Env
+# ----------------
+aiofiles==23.2.1          # Async file I/O
+python-dotenv==1.0.0      # Environment variables
+
+# ----------------
+# Task Queue (Optional – comment out if unused)
+# ----------------
+# celery==5.3.4
+# redis==5.0.1
+
+# ----------------
+# Logging & Utilities
+# ----------------
+loguru==0.7.2             # Better logging
+email-validator==2.3.0    # Email validation
+psutil==5.9.6             # System resource monitoring (DoS prevention)
+async-timeout==4.0.3      # Async timeouts (Security layer)
+
+# ----------------
+# Testing
+# ----------------
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+
+# ----------------
+# Qwen2.5
+# ----------------
+git+https://github.com/huggingface/transformers==5.2.0.dev0
+accelerate==1.12.0
+qwen-vl-utils==0.0.14
+
+# ----------------
+# Semantic Analyzer & Chat
+# ----------------
+anthropic==0.79.0         # Claude API (semantic analysis + optional chat)
+google-genai==1.62.0      # Gemini API (semantic analysis + optional chat)
+
+# ----------------
+# MCP (Model Context Protocol) — P3 Revit BIM server
+# ----------------
+mcp>=1.0.0                # MCP Python SDK (Anthropic) — for backend/mcp/server.py
+
+# GPU Support:
+# -----------
+# For faster YOLO inference with GPU:
+# - Install CUDA toolkit
+# - Install: torch with CUDA support
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+#
+# Production Additions:
+# --------------------
+# Consider adding:
+# - gunicorn (production WSGI server)
+# - sentry-sdk (error monitoring)
+# - prometheus-client (metrics)
+# - python-jose (JWT auth)
+
+bitsandbytes==0.49.2
+
+# ----------------
+# DeepLSD-assisted Grid Detector
+# ----------------
+deeplsd==0.0
+omegaconf===2.3.0
+scikit-image==0.25.2
+pytlsd==0.0.2
