@@ -1,0 +1,16 @@
+2026-02-10 19:23:08.716 | INFO     | app:lifespan:35 - Starting Amplify Floor Plan AI System
+2026-02-10 19:23:09.106 | INFO     | app:lifespan:51 - ✓ Connected to Windows Revit server
+2026-02-10 19:23:09.107 | INFO     | app:lifespan:55 - System ready!
+2026-02-10 19:24:54.780 | INFO     | utils.file_handler:save_upload_file:37 - Saved upload to data/uploads/90d94ef8-834e-4dfa-84db-b6766a748e64.pdf
+2026-02-10 19:24:54.780 | INFO     | api.routes:upload_floor_plan:57 - File uploaded: STRU_COL -1.pdf -> Job ID: 90d94ef8-834e-4dfa-84db-b6766a748e64
+2026-02-10 19:24:54.805 | INFO     | core.pipeline:process:57 - [90d94ef8-834e-4dfa-84db-b6766a748e64] Starting pipeline for data/uploads/90d94ef8-834e-4dfa-84db-b6766a748e64.pdf
+2026-02-10 19:24:54.805 | INFO     | services.stage1_pdf_processor:process:34 - Processing PDF: data/uploads/90d94ef8-834e-4dfa-84db-b6766a748e64.pdf
+2026-02-10 19:25:00.910 | INFO     | core.pipeline:process:62 - [90d94ef8-834e-4dfa-84db-b6766a748e64] Stage 1 complete: PDF converted to image
+2026-02-10 19:25:01.802 | WARNING  | services.stage2_scale_detector:detect:42 - Could not detect scale, using default: 1:100
+2026-02-10 19:25:01.802 | INFO     | core.pipeline:process:67 - [90d94ef8-834e-4dfa-84db-b6766a748e64] Stage 2 complete: Scale = 100
+2026-02-10 19:25:04.161 | INFO     | services.stage3_element_detector:detect:176 - Detected: 0 walls, 0 doors, 0 windows
+2026-02-10 19:25:04.162 | INFO     | core.pipeline:process:75 - [90d94ef8-834e-4dfa-84db-b6766a748e64] Stage 3 complete: Detected 0 walls, 0 columns
+2026-02-10 19:25:04.162 | INFO     | services.stage4_local_qwen:analyze:55 - Analyzing with Local Qwen2.5-VL...
+2026-02-10 19:25:04.925 | ERROR    | core.pipeline:process:144 - [90d94ef8-834e-4dfa-84db-b6766a748e64] Pipeline failed: Expected all tensors to be on the same device, but got index is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA__index_select)
+2026-02-10 19:25:04.926 | ERROR    | api.routes:run_pipeline:114 - Pipeline failed for 90d94ef8-834e-4dfa-84db-b6766a748e64: Expected all tensors to be on the same device, but got index is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA__index_select)
+2026-02-10 19:36:01.223 | INFO     | app:lifespan:60 - Shutting down Amplify Floor Plan AI System
