@@ -1,0 +1,25 @@
+{
+  "family_name": "M_Concrete-Round-Column",
+  "category": "StructuralColumns",
+  "placement": "column",
+  "shape": "circular",
+  "material": "concrete",
+  "tags": ["column", "concrete", "circular", "round", "structural"],
+  "description": "Autodesk metric concrete round column. Parameter: b (diameter mm).",
+  "parameter_map": {
+    "diameter_mm": "b"
+  },
+  "types": [
+    { "type_name": "200Ø",  "is_circular": true, "diameter_mm": 200 },
+    { "type_name": "250Ø",  "is_circular": true, "diameter_mm": 250 },
+    { "type_name": "300Ø",  "is_circular": true, "diameter_mm": 300 },
+    { "type_name": "350Ø",  "is_circular": true, "diameter_mm": 350 },
+    { "type_name": "400Ø",  "is_circular": true, "diameter_mm": 400 },
+    { "type_name": "450Ø",  "is_circular": true, "diameter_mm": 450 },
+    { "type_name": "500Ø",  "is_circular": true, "diameter_mm": 500 },
+    { "type_name": "600Ø",  "is_circular": true, "diameter_mm": 600 },
+    { "type_name": "800Ø",  "is_circular": true, "diameter_mm": 800 }
+  ],
+  "windows_rfa_search_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\US Metric\\Structural\\Columns\\Concrete\\M_Concrete-Round-Column.rfa",
+  "notes": "Use for any column annotated with Ø, ∅, dia, or phi notation on the drawing."
+}

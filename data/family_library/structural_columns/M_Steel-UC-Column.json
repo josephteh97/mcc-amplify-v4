@@ -1,0 +1,36 @@
+{
+  "family_name": "UB-Universal Beams-Column",
+  "category": "StructuralColumns",
+  "placement": "column",
+  "shape": "I-section",
+  "material": "steel",
+  "tags": ["column", "steel", "UB", "universal", "structural"],
+  "description": "Universal Beams (UB) steel section for structural steel frames. Type parameters: bf (flange width mm), d (depth mm), tf (flange thickness mm), tw (web thickness mm).",
+  "parameter_map": {
+    "width_mm":  "bf",
+    "depth_mm":  "d",
+    "flange_thickness_mm": "f",
+    "web_thickness_mm": "wt",
+    "web_fillet_mm": "wf",
+    "centroid_horizontal_mm": "width/2",
+    "centroid_vertical_mm": "Height/2",
+    "witdth, height, flange thickness, web thickness, centroid horizontal, centroid vertical": "nill"
+  },
+  "types": [
+    { "type_name": "UC 152x152x23",  "width_mm": 152, "depth_mm": 152, "weight_kg_m": 23  },
+    { "type_name": "UC 152x152x30",  "width_mm": 152, "depth_mm": 152, "weight_kg_m": 30  },
+    { "type_name": "UC 152x152x37",  "width_mm": 152, "depth_mm": 152, "weight_kg_m": 37  },
+    { "type_name": "UC 203x203x46",  "width_mm": 203, "depth_mm": 203, "weight_kg_m": 46  },
+    { "type_name": "UC 203x203x60",  "width_mm": 203, "depth_mm": 203, "weight_kg_m": 60  },
+    { "type_name": "UC 203x203x86",  "width_mm": 203, "depth_mm": 203, "weight_kg_m": 86  },
+    { "type_name": "UC 254x254x73",  "width_mm": 254, "depth_mm": 254, "weight_kg_m": 73  },
+    { "type_name": "UC 254x254x89",  "width_mm": 254, "depth_mm": 254, "weight_kg_m": 89  },
+    { "type_name": "UC 254x254x107", "width_mm": 254, "depth_mm": 254, "weight_kg_m": 107 },
+    { "type_name": "UC 305x305x97",  "width_mm": 305, "depth_mm": 305, "weight_kg_m": 97  },
+    { "type_name": "UC 305x305x118", "width_mm": 305, "depth_mm": 305, "weight_kg_m": 118 },
+    { "type_name": "UC 305x305x158", "width_mm": 305, "depth_mm": 305, "weight_kg_m": 158 },
+    { "type_name": "UC 356x368x129", "width_mm": 368, "depth_mm": 356, "weight_kg_m": 129 },
+    { "type_name": "UC 356x368x177", "width_mm": 368, "depth_mm": 356, "weight_kg_m": 177 }
+  ],
+  "notes": "Use when drawing type-mark annotation matches UC pattern (e.g. C3=UC305x305x158). If only width×depth is annotated, pick by closest size."
+}

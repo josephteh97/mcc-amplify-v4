@@ -1,0 +1,432 @@
+{
+  "version": 2,
+  "indexed_at": "2026-02-27T15:56:55.383114+00:00",
+  "library_root": "/home/jiezhi/Documents/mcc-amplify-ai/data/family_library",
+  "total": 6,
+  "families": [
+    {
+      "path": "doors/M_Single-Flush.json",
+      "rfa_local": false,
+      "family_name": "M_Single-Flush",
+      "category": "OST_Doors",
+      "placement": "hosted",
+      "shape": "rectangular",
+      "material": "general",
+      "tags": [
+        "door",
+        "single",
+        "flush",
+        "swing"
+      ],
+      "types": [
+        {
+          "type_name": "750×2000mm",
+          "width_mm": 750,
+          "height_mm": 2000
+        },
+        {
+          "type_name": "800×2000mm",
+          "width_mm": 800,
+          "height_mm": 2000
+        },
+        {
+          "type_name": "850×2000mm",
+          "width_mm": 850,
+          "height_mm": 2000
+        },
+        {
+          "type_name": "900×2000mm",
+          "width_mm": 900,
+          "height_mm": 2000
+        },
+        {
+          "type_name": "900×2100mm",
+          "width_mm": 900,
+          "height_mm": 2100
+        },
+        {
+          "type_name": "1000×2100mm",
+          "width_mm": 1000,
+          "height_mm": 2100
+        },
+        {
+          "type_name": "1200×2100mm",
+          "width_mm": 1200,
+          "height_mm": 2100
+        }
+      ],
+      "sidecar": true,
+      "description": "Standard single-leaf flush door. Parameters: Width (mm), Height (mm).",
+      "parameter_map": {
+        "width_mm": "Width",
+        "height_mm": "Height"
+      },
+      "windows_rfa_search_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\US Metric\\Doors\\M_Single-Flush.rfa",
+      "notes": "Default door for most residential/commercial openings. Requires host wall."
+    },
+    {
+      "path": "structural_columns/M_Concrete-Rectangular-Column.json",
+      "rfa_local": false,
+      "family_name": "M_Concrete-Rectangular-Column",
+      "category": "StructuralColumns",
+      "placement": "column",
+      "shape": "rectangular",
+      "material": "concrete",
+      "tags": [
+        "column",
+        "concrete",
+        "rectangular",
+        "structural"
+      ],
+      "types": [
+        {
+          "type_name": "200×200mm",
+          "width_mm": 200,
+          "depth_mm": 200
+        },
+        {
+          "type_name": "300×300mm",
+          "width_mm": 300,
+          "depth_mm": 300
+        },
+        {
+          "type_name": "300×400mm",
+          "width_mm": 300,
+          "depth_mm": 400
+        },
+        {
+          "type_name": "400×400mm",
+          "width_mm": 400,
+          "depth_mm": 400
+        },
+        {
+          "type_name": "400×600mm",
+          "width_mm": 400,
+          "depth_mm": 600
+        },
+        {
+          "type_name": "500×500mm",
+          "width_mm": 500,
+          "depth_mm": 500
+        },
+        {
+          "type_name": "600×600mm",
+          "width_mm": 600,
+          "depth_mm": 600
+        },
+        {
+          "type_name": "700×700mm",
+          "width_mm": 700,
+          "depth_mm": 700
+        },
+        {
+          "type_name": "800×800mm",
+          "width_mm": 800,
+          "depth_mm": 800
+        }
+      ],
+      "sidecar": true,
+      "description": "Autodesk metric concrete rectangular column. Default Revit 2023 library family. Type parameters: b (width mm), h (depth mm).",
+      "parameter_map": {
+        "width_mm": "b",
+        "depth_mm": "h"
+      },
+      "windows_rfa_search_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\US Metric\\Structural\\Columns\\Concrete\\M_Concrete-Rectangular-Column.rfa",
+      "notes": "Most common family for RC frame construction. Agent should prefer this for any concrete column unless the drawing shows a circular section."
+    },
+    {
+      "path": "structural_columns/M_Concrete-Round-Column.json",
+      "rfa_local": false,
+      "family_name": "M_Concrete-Round-Column",
+      "category": "StructuralColumns",
+      "placement": "column",
+      "shape": "circular",
+      "material": "concrete",
+      "tags": [
+        "column",
+        "concrete",
+        "circular",
+        "round",
+        "structural"
+      ],
+      "types": [
+        {
+          "type_name": "200Ø",
+          "is_circular": true,
+          "diameter_mm": 200
+        },
+        {
+          "type_name": "250Ø",
+          "is_circular": true,
+          "diameter_mm": 250
+        },
+        {
+          "type_name": "300Ø",
+          "is_circular": true,
+          "diameter_mm": 300
+        },
+        {
+          "type_name": "350Ø",
+          "is_circular": true,
+          "diameter_mm": 350
+        },
+        {
+          "type_name": "400Ø",
+          "is_circular": true,
+          "diameter_mm": 400
+        },
+        {
+          "type_name": "450Ø",
+          "is_circular": true,
+          "diameter_mm": 450
+        },
+        {
+          "type_name": "500Ø",
+          "is_circular": true,
+          "diameter_mm": 500
+        },
+        {
+          "type_name": "600Ø",
+          "is_circular": true,
+          "diameter_mm": 600
+        },
+        {
+          "type_name": "800Ø",
+          "is_circular": true,
+          "diameter_mm": 800
+        }
+      ],
+      "sidecar": true,
+      "description": "Autodesk metric concrete round column. Parameter: b (diameter mm).",
+      "parameter_map": {
+        "diameter_mm": "b"
+      },
+      "windows_rfa_search_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\US Metric\\Structural\\Columns\\Concrete\\M_Concrete-Round-Column.rfa",
+      "notes": "Use for any column annotated with Ø, ∅, dia, or phi notation on the drawing."
+    },
+    {
+      "path": "structural_columns/M_Steel-UC-Column.json",
+      "rfa_local": false,
+      "family_name": "UB-Universal Beams-Column",
+      "category": "StructuralColumns",
+      "placement": "column",
+      "shape": "I-section",
+      "material": "steel",
+      "tags": [
+        "column",
+        "steel",
+        "UC",
+        "universal",
+        "structural"
+      ],
+      "types": [
+        {
+          "type_name": "UC 152x152x23",
+          "width_mm": 152,
+          "depth_mm": 152,
+          "weight_kg_m": 23
+        },
+        {
+          "type_name": "UC 152x152x30",
+          "width_mm": 152,
+          "depth_mm": 152,
+          "weight_kg_m": 30
+        },
+        {
+          "type_name": "UC 152x152x37",
+          "width_mm": 152,
+          "depth_mm": 152,
+          "weight_kg_m": 37
+        },
+        {
+          "type_name": "UC 203x203x46",
+          "width_mm": 203,
+          "depth_mm": 203,
+          "weight_kg_m": 46
+        },
+        {
+          "type_name": "UC 203x203x60",
+          "width_mm": 203,
+          "depth_mm": 203,
+          "weight_kg_m": 60
+        },
+        {
+          "type_name": "UC 203x203x86",
+          "width_mm": 203,
+          "depth_mm": 203,
+          "weight_kg_m": 86
+        },
+        {
+          "type_name": "UC 254x254x73",
+          "width_mm": 254,
+          "depth_mm": 254,
+          "weight_kg_m": 73
+        },
+        {
+          "type_name": "UC 254x254x89",
+          "width_mm": 254,
+          "depth_mm": 254,
+          "weight_kg_m": 89
+        },
+        {
+          "type_name": "UC 254x254x107",
+          "width_mm": 254,
+          "depth_mm": 254,
+          "weight_kg_m": 107
+        },
+        {
+          "type_name": "UC 305x305x97",
+          "width_mm": 305,
+          "depth_mm": 305,
+          "weight_kg_m": 97
+        },
+        {
+          "type_name": "UC 305x305x118",
+          "width_mm": 305,
+          "depth_mm": 305,
+          "weight_kg_m": 118
+        },
+        {
+          "type_name": "UC 305x305x158",
+          "width_mm": 305,
+          "depth_mm": 305,
+          "weight_kg_m": 158
+        },
+        {
+          "type_name": "UC 356x368x129",
+          "width_mm": 368,
+          "depth_mm": 356,
+          "weight_kg_m": 129
+        },
+        {
+          "type_name": "UC 356x368x177",
+          "width_mm": 368,
+          "depth_mm": 356,
+          "weight_kg_m": 177
+        }
+      ],
+      "sidecar": true,
+      "description": "Universal Column (UC) steel section for structural steel frames. Type parameters: bf (flange width mm), d (depth mm), tf (flange thickness mm), tw (web thickness mm).",
+      "parameter_map": {
+        "width_mm": "bf",
+        "depth_mm": "d"
+      },
+      "notes": "Use when drawing type-mark annotation matches UC pattern (e.g. C3=UC305x305x158). If only width×depth is annotated, pick by closest size."
+    },
+    {
+      "path": "structural_framing/M_Concrete-Rectangular-Beam.json",
+      "rfa_local": false,
+      "family_name": "M_Concrete-Rectangular-Beam",
+      "category": "StructuralFraming",
+      "placement": "beam",
+      "shape": "rectangular",
+      "material": "concrete",
+      "tags": [
+        "beam",
+        "concrete",
+        "rectangular",
+        "structural",
+        "framing"
+      ],
+      "types": [
+        {
+          "type_name": "200×400mm",
+          "width_mm": 200,
+          "depth_mm": 400
+        },
+        {
+          "type_name": "250×500mm",
+          "width_mm": 250,
+          "depth_mm": 500
+        },
+        {
+          "type_name": "300×600mm",
+          "width_mm": 300,
+          "depth_mm": 600
+        },
+        {
+          "type_name": "300×700mm",
+          "width_mm": 300,
+          "depth_mm": 700
+        },
+        {
+          "type_name": "350×700mm",
+          "width_mm": 350,
+          "depth_mm": 700
+        },
+        {
+          "type_name": "400×800mm",
+          "width_mm": 400,
+          "depth_mm": 800
+        }
+      ],
+      "sidecar": true,
+      "description": "Autodesk metric concrete rectangular beam. Parameters: b (width mm), h (depth/height mm).",
+      "parameter_map": {
+        "width_mm": "b",
+        "depth_mm": "h"
+      },
+      "windows_rfa_search_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\US Metric\\Structural\\Framing\\Concrete\\M_Concrete-Rectangular Beam.rfa"
+    },
+    {
+      "path": "windows/M_Fixed.json",
+      "rfa_local": false,
+      "family_name": "M_Fixed",
+      "category": "OST_Windows",
+      "placement": "hosted",
+      "shape": "rectangular",
+      "material": "general",
+      "tags": [
+        "window",
+        "fixed",
+        "glazing"
+      ],
+      "types": [
+        {
+          "type_name": "600×900mm",
+          "width_mm": 600,
+          "height_mm": 900
+        },
+        {
+          "type_name": "900×900mm",
+          "width_mm": 900,
+          "height_mm": 900
+        },
+        {
+          "type_name": "900×1200mm",
+          "width_mm": 900,
+          "height_mm": 1200
+        },
+        {
+          "type_name": "1200×1200mm",
+          "width_mm": 1200,
+          "height_mm": 1200
+        },
+        {
+          "type_name": "1500×1200mm",
+          "width_mm": 1500,
+          "height_mm": 1200
+        },
+        {
+          "type_name": "1800×1500mm",
+          "width_mm": 1800,
+          "height_mm": 1500
+        },
+        {
+          "type_name": "2400×1500mm",
+          "width_mm": 2400,
+          "height_mm": 1500
+        }
+      ],
+      "sidecar": true,
+      "description": "Standard fixed (non-operable) window. Parameters: Width (mm), Height (mm), Sill Height (mm).",
+      "parameter_map": {
+        "width_mm": "Width",
+        "height_mm": "Height",
+        "sill_height_mm": "Sill Height"
+      },
+      "windows_rfa_search_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\US Metric\\Windows\\M_Fixed.rfa",
+      "notes": "Default sill height is 900mm (applied via project profile). Requires host wall."
+    }
+  ]
+}

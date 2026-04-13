@@ -1,0 +1,22 @@
+{
+  "family_name": "M_Concrete-Rectangular-Beam",
+  "category": "StructuralFraming",
+  "placement": "beam",
+  "shape": "rectangular",
+  "material": "concrete",
+  "tags": ["beam", "concrete", "rectangular", "structural", "framing"],
+  "description": "Autodesk metric concrete rectangular beam. Parameters: b (width mm), h (depth/height mm).",
+  "parameter_map": {
+    "width_mm":  "b",
+    "depth_mm":  "h"
+  },
+  "types": [
+    { "type_name": "200×400mm", "width_mm": 200, "depth_mm": 400 },
+    { "type_name": "250×500mm", "width_mm": 250, "depth_mm": 500 },
+    { "type_name": "300×600mm", "width_mm": 300, "depth_mm": 600 },
+    { "type_name": "300×700mm", "width_mm": 300, "depth_mm": 700 },
+    { "type_name": "350×700mm", "width_mm": 350, "depth_mm": 700 },
+    { "type_name": "400×800mm", "width_mm": 400, "depth_mm": 800 }
+  ],
+  "windows_rfa_search_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\US Metric\\Structural\\Framing\\Concrete\\M_Concrete-Rectangular Beam.rfa"
+}

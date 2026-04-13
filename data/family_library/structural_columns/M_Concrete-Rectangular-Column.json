@@ -1,0 +1,26 @@
+{
+  "family_name": "M_Concrete-Rectangular-Column",
+  "category": "StructuralColumns",
+  "placement": "column",
+  "shape": "rectangular",
+  "material": "concrete",
+  "tags": ["column", "concrete", "rectangular", "structural"],
+  "description": "Autodesk metric concrete rectangular column. Default Revit 2023 library family. Type parameters: b (width mm), h (depth mm).",
+  "parameter_map": {
+    "width_mm":  "b",
+    "depth_mm":  "h"
+  },
+  "types": [
+    { "type_name": "200×200mm",  "width_mm": 200,  "depth_mm": 200  },
+    { "type_name": "300×300mm",  "width_mm": 300,  "depth_mm": 300  },
+    { "type_name": "300×400mm",  "width_mm": 300,  "depth_mm": 400  },
+    { "type_name": "400×400mm",  "width_mm": 400,  "depth_mm": 400  },
+    { "type_name": "400×600mm",  "width_mm": 400,  "depth_mm": 600  },
+    { "type_name": "500×500mm",  "width_mm": 500,  "depth_mm": 500  },
+    { "type_name": "600×600mm",  "width_mm": 600,  "depth_mm": 600  },
+    { "type_name": "700×700mm",  "width_mm": 700,  "depth_mm": 700  },
+    { "type_name": "800×800mm",  "width_mm": 800,  "depth_mm": 800  }
+  ],
+  "windows_rfa_search_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\US Metric\\Structural\\Columns\\Concrete\\M_Concrete-Rectangular-Column.rfa",
+  "notes": "Most common family for RC frame construction. Agent should prefer this for any concrete column unless the drawing shows a circular section."
+}
