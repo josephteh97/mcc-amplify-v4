@@ -35,7 +35,6 @@ LOCAL_MODELS_DIR = Path(os.getenv("LOCAL_MODELS_DIR", "../models"))
 
 # Ollama settings
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "moondream")  # must be a vision model
 
 # ── Gemini free-tier rate limiter ─────────────────────────────────────────────
 _GEMINI_LOCK          = threading.Lock()
@@ -68,8 +67,10 @@ class SemanticAnalyzer:
             except Exception as e:
                 logger.warning(f"Backend {backend_name} failed: {e}")
         else:
-            raise RuntimeError(
-                f"No backend could be initialised. Tried: {BACKEND_PRIORITY}"
+            logger.warning(
+                f"No semantic AI backend could be initialised. Tried: {BACKEND_PRIORITY}. "
+                "Add GOOGLE_API_KEY or ANTHROPIC_API_KEY to backend/.env — "
+                "semantic analysis will be skipped and YOLO detections used as-is."
             )
 
     def _init_backend(self, backend_name: str):
@@ -162,44 +163,38 @@ class SemanticAnalyzer:
     # Ollama (vision models) initializer with auto-start
     # ------------------------------------------------------------------
     def _init_ollama(self):
-        """Initialize connection to Ollama; optionally start the server if not running."""
+        """Initialize connection to Ollama, auto-selecting the best available vision model."""
         import requests
         import subprocess
         import time
         import sys
 
-        # Try to connect first
         def is_ollama_running():
             try:
-                r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
+                r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
                 r.raise_for_status()
                 return True
-            except:
+            except Exception:
                 return False
 
         if not is_ollama_running():
             logger.info("Ollama server not detected – attempting to start it...")
             try:
-                # Start ollama serve in background (detached)
                 if sys.platform == "win32":
-                    # Windows: use CREATE_NO_WINDOW flag
-                    proc = subprocess.Popen(
+                    subprocess.Popen(
                         ["ollama", "serve"],
                         creationflags=subprocess.CREATE_NO_WINDOW,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                     )
                 else:
-                    # Linux/macOS: detach and run in background
-                    proc = subprocess.Popen(
+                    subprocess.Popen(
                         ["ollama", "serve"],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         start_new_session=True,
                     )
-                logger.info("Ollama serve started, waiting for it to become ready...")
-                # Wait up to 10 seconds for the server to respond
-                for _ in range(10):
+                for _ in range(15):
                     time.sleep(1)
                     if is_ollama_running():
                         break
@@ -208,42 +203,54 @@ class SemanticAnalyzer:
             except Exception as e:
                 raise RuntimeError(f"Failed to start Ollama server: {e}")
 
-        # Try moondream first
+        # Discover installed models
         try:
-            self.model_id = "moondream"
-            # Quick test to verify it works
-            test_payload = {
-                "model": self.model_id,
-                "prompt": "test",
-                "stream": False,
-                "options": {"num_predict": 1}
-            }
-            resp = requests.post(f"{OLLAMA_URL}/api/generate", json=test_payload, timeout=5)
-            if resp.status_code == 200:
-                self.client = requests.Session()
-                logger.info(f"✓ Ollama ready – model: {self.model_id}")
-                return
-        except:
-            logger.warning("moondream failed, trying llava...")
+            r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
+            installed = {m["name"] for m in r.json().get("models", [])}
+        except Exception as e:
+            raise ConnectionError(f"Cannot list Ollama models: {e}")
 
-        # Fall back to llava
+        # Vision model preference order — best for floor plan analysis first
+        VISION_CANDIDATES = [
+            "qwen3-vl:latest", "qwen3-vl:8b", "qwen3-vl:4b", "qwen3-vl:2b",
+            "qwen2.5vl:7b", "qwen2.5vl:3b",
+            "llava:13b", "llava:7b",
+            "llava-llama3:8b", "llava-phi3:3.8b",
+            "llama3.2-vision:11b",
+            "minicpm-v:8b",
+            "moondream:latest", "moondream",
+            "bakllava:7b",
+        ]
+
+        # Honour OLLAMA_MODEL env var if set and installed
+        env_model = os.getenv("OLLAMA_MODEL", "").strip()
+        if env_model:
+            VISION_CANDIDATES.insert(0, env_model)
+
+        chosen = next((m for m in VISION_CANDIDATES if m in installed), None)
+        if chosen is None:
+            raise ConnectionError(
+                f"No supported vision model found in Ollama. "
+                f"Installed: {sorted(installed)}. "
+                f"Run: ollama pull qwen3-vl"
+            )
+
+        # Test the chosen model with a generous timeout (first call loads weights)
+        test_payload = {
+            "model": chosen,
+            "prompt": "hi",
+            "stream": False,
+            "options": {"num_predict": 1},
+        }
         try:
-            self.model_id = "llava"
-            test_payload = {
-                "model": self.model_id,
-                "prompt": "test",
-                "stream": False,
-                "options": {"num_predict": 1}
-            }
-            resp = requests.post(f"{OLLAMA_URL}/api/generate", json=test_payload, timeout=5)
-            if resp.status_code == 200:
-                self.client = requests.Session()
-                logger.info(f"✓ Ollama ready – model: {self.model_id}")
-                return
-        except:
-            pass
+            resp = requests.post(f"{OLLAMA_URL}/api/generate", json=test_payload, timeout=60)
+            resp.raise_for_status()
+        except Exception as e:
+            raise ConnectionError(f"Ollama model {chosen!r} failed test call: {e}")
 
-        raise ConnectionError("Neither moondream nor llava worked via Ollama")
+        self.model_id = chosen
+        self.client   = requests.Session()
+        logger.info(f"✓ Ollama ready – model: {self.model_id}")
 
     # ------------------------------------------------------------------
     # Gemini rate limiter
@@ -281,6 +288,10 @@ class SemanticAnalyzer:
         Returns:
             Enriched and validated element dictionary
         """
+        if self.backend is None:
+            logger.warning("Semantic analysis skipped — no AI backend configured. Returning YOLO detections unchanged.")
+            return detected_elements
+
         logger.info(f"Semantic analysis via {self.backend}...")
 
         pil_image = Image.fromarray(image_data["image"])
