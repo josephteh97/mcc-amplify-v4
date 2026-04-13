@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Revit 2023 Add-in Manifest
+  ==========================
+  Place this file AND RevitModelBuilderAddin.dll in:
+    C:\ProgramData\Autodesk\Revit\Addins\2023\
+
+  Revit loads it automatically the next time it starts.
+  No restart of Revit is required if you copy during an active session —
+  but the server will only start listening after the next Revit launch.
+-->
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>Revit Model Builder (Amplify AI)</Name>
+    <Assembly>RevitModelBuilderAddin.dll</Assembly>
+    <AddInId>A1B2C3D4-E5F6-7890-ABCD-EF1234567890</AddInId>
+    <FullClassName>RevitModelBuilderAddin.App</FullClassName>
+    <VendorId>AMPLIFY_AI</VendorId>
+    <VendorDescription>Amplify Floor Plan AI - Revit BIM Builder</VendorDescription>
+  </AddIn>
+</RevitAddIns>

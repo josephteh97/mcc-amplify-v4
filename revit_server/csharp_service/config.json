@@ -1,0 +1,62 @@
+{
+  "revit_settings": {
+    "version": "2023",
+    "template_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Templates\\Architectural Template.rte",
+    "output_directory": "C:\\RevitOutput",
+    "temp_directory": "C:\\RevitTemp",
+    "enable_headless": true,
+    "close_after_save": true
+  },
+  
+  "api_settings": {
+    "host": "0.0.0.0",
+    "port": 5000,
+    "api_key": "my-revit-key-2023",   
+    "//": "must match REVIT_SERVER_API_KEY from .env file",
+    "enable_https": false,
+    "cors_origins": ["http://192.168.1.50:8000"],
+    "max_concurrent_builds": 3,
+    "request_timeout_seconds": 300
+  },
+  
+  "logging": {
+    "level": "Information",
+    "log_directory": "C:\\RevitService\\Logs",
+    "enable_console": true,
+    "enable_file": true,
+    "max_log_files": 30
+  },
+  
+  "performance": {
+    "max_memory_mb": 8192,
+    "enable_model_cache": true,
+    "cache_size_mb": 2048
+  },
+  
+  "families": {
+    "wall_types": {
+      "exterior_300": "Generic - 300mm",
+      "exterior_200": "Generic - 200mm",
+      "interior_150": "Generic - 150mm",
+      "interior_100": "Generic - 100mm"
+    },
+    "door_families": {
+      "single": "M_Single-Flush",
+      "double": "M_Double-Flush",
+      "sliding": "M_Sliding"
+    },
+    "window_families": {
+      "fixed": "M_Fixed",
+      "casement": "M_Casement",
+      "sliding": "M_Sliding"
+    }
+  },
+  
+  "defaults": {
+    "wall_height": 2800,
+    "floor_thickness": 200,
+    "ceiling_height": 3000,
+    "door_height": 2100,
+    "window_sill_height": 900
+  }
+}

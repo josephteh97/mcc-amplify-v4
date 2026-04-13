@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>RevitModelBuilderAddin</AssemblyName>
+    <RootNamespace>RevitModelBuilderAddin</RootNamespace>
+    <Nullable>disable</Nullable>
+    <LangVersion>9</LangVersion>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <!-- No EXE — Revit loads our DLL directly -->
+    <OutputType>Library</OutputType>
+    <!-- Revit 2023 ships its own copies of Newtonsoft; don't embed -->
+    <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
+  </PropertyGroup>
+
+  <!--
+    Revit API references.
+    Adjust the HintPath if Revit is installed to a non-default drive.
+  -->
+  <ItemGroup>
+    <Reference Include="RevitAPI">
+      <HintPath>C:\Program Files\Autodesk\Revit 2023\RevitAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>C:\Program Files\Autodesk\Revit 2023\RevitAPIUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Newtonsoft.Json is already in Revit's folder; mark Private=false
+         so it isn't copied to the output and conflicts with Revit's version. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>
