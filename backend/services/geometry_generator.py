@@ -36,8 +36,9 @@ DEFAULT_STOREY_HEIGHT_MM = 3000
 STANDARD_COLUMN_SIZES = [200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000]
 
 
-def _snap_size(v: float) -> float:
-    return float(min(STANDARD_COLUMN_SIZES, key=lambda s: abs(s - v)))
+def _nearest(v: float, candidates: List[float]) -> float:
+    """Return the element of *candidates* closest to *v* by absolute difference."""
+    return float(min(candidates, key=lambda c: abs(c - v)))
 
 
 def normalize_column_dimensions(width_mm: float, depth_mm: float) -> Tuple[float, float]:
@@ -49,9 +50,9 @@ def normalize_column_dimensions(width_mm: float, depth_mm: float) -> Tuple[float
     """
     aspect = width_mm / depth_mm if depth_mm > 0 else 1.0
     if abs(1.0 - aspect) <= 0.05:
-        snapped = _snap_size((width_mm + depth_mm) / 2)
+        snapped = _nearest((width_mm + depth_mm) / 2, STANDARD_COLUMN_SIZES)
         return snapped, snapped
-    return _snap_size(width_mm), _snap_size(depth_mm)
+    return _nearest(width_mm, STANDARD_COLUMN_SIZES), _nearest(depth_mm, STANDARD_COLUMN_SIZES)
 
 
 class GeometryGenerator:
@@ -309,8 +310,8 @@ class GeometryGenerator:
         min_bay = min(all_sp) if all_sp else DEFAULT_STOREY_HEIGHT_MM
         tol = min_bay / 2.0
 
-        snapped_x = min(x_grid, key=lambda gx: abs(gx - x_mm))
-        snapped_y = min(y_grid, key=lambda gy: abs(gy - y_mm))
+        snapped_x = _nearest(x_mm, x_grid)
+        snapped_y = _nearest(y_mm, y_grid)
 
         new_x = snapped_x if abs(snapped_x - x_mm) <= tol else x_mm
         new_y = snapped_y if abs(snapped_y - y_mm) <= tol else y_mm
