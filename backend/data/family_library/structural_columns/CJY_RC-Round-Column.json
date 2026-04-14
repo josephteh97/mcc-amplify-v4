@@ -1,0 +1,14 @@
+{
+  "family_name": "CJY_RC Round Column",
+  "category": "OST_StructuralColumns",
+  "placement": "column",
+  "shape": "circular",
+  "material": "concrete",
+  "tags": ["column", "structural", "concrete", "circular", "round"],
+  "windows_rfa_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\CJY_RC Round Column.rfa",
+  "notes": "Used for circular (round) concrete columns. Type Φ{n} or {n}x{n}mm.",
+  "types": [
+    {"type_name": "Φ300",      "is_circular": true, "diameter_mm": 300},
+    {"type_name": "300x300mm", "is_circular": true, "diameter_mm": 300}
+  ]
+}

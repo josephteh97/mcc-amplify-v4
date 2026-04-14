@@ -1,0 +1,121 @@
+{
+  "version": 2,
+  "indexed_at": "2026-04-14T10:27:11.981859+00:00",
+  "library_root": "/home/jiezhi/Documents/mcc-amplify-v4/backend/data/family_library",
+  "total": 2,
+  "families": [
+    {
+      "path": "structural_columns/CJY_Concrete-Rectangular-Column.json",
+      "windows_rfa_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\CJY_Concrete-Rectangular-Column.rfa",
+      "rfa_local": false,
+      "family_name": "CJY_Concrete-Rectangular-Column",
+      "category": "OST_StructuralColumns",
+      "placement": "column",
+      "shape": "rectangular",
+      "material": "concrete",
+      "tags": [
+        "column",
+        "structural",
+        "concrete",
+        "rectangular",
+        "square",
+        "200x200",
+        "200x250",
+        "200x300",
+        "300x300",
+        "300x450",
+        "450x600",
+        "600x750",
+        "300x800",
+        "800x300",
+        "800x800",
+        "1200x1200"
+      ],
+      "types": [
+        {
+          "type_name": "200x200mm",
+          "width_mm": 200,
+          "depth_mm": 200
+        },
+        {
+          "type_name": "200x250mm",
+          "width_mm": 200,
+          "depth_mm": 250
+        },
+        {
+          "type_name": "200x300mm",
+          "width_mm": 200,
+          "depth_mm": 300
+        },
+        {
+          "type_name": "300x300mm",
+          "width_mm": 300,
+          "depth_mm": 300
+        },
+        {
+          "type_name": "300x450mm",
+          "width_mm": 300,
+          "depth_mm": 450
+        },
+        {
+          "type_name": "450x600mm",
+          "width_mm": 450,
+          "depth_mm": 600
+        },
+        {
+          "type_name": "600x750mm",
+          "width_mm": 600,
+          "depth_mm": 750
+        },
+        {
+          "type_name": "800x300mm",
+          "width_mm": 300,
+          "depth_mm": 800
+        },
+        {
+          "type_name": "800x800mm",
+          "width_mm": 800,
+          "depth_mm": 800
+        },
+        {
+          "type_name": "1200x1200mm",
+          "width_mm": 1200,
+          "depth_mm": 1200
+        }
+      ],
+      "sidecar": true,
+      "notes": "Used for ALL square and rectangular concrete columns. Square columns use equal WxD types (e.g. 300x300mm)."
+    },
+    {
+      "path": "structural_columns/CJY_RC-Round-Column.json",
+      "windows_rfa_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\CJY_RC Round Column.rfa",
+      "rfa_local": false,
+      "family_name": "CJY_RC Round Column",
+      "category": "OST_StructuralColumns",
+      "placement": "column",
+      "shape": "circular",
+      "material": "concrete",
+      "tags": [
+        "column",
+        "structural",
+        "concrete",
+        "circular",
+        "round"
+      ],
+      "types": [
+        {
+          "type_name": "Φ300",
+          "is_circular": true,
+          "diameter_mm": 300
+        },
+        {
+          "type_name": "300x300mm",
+          "is_circular": true,
+          "diameter_mm": 300
+        }
+      ],
+      "sidecar": true,
+      "notes": "Used for circular (round) concrete columns. Type Φ{n} or {n}x{n}mm."
+    }
+  ]
+}
