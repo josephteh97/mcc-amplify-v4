@@ -29,6 +29,29 @@ from backend.services.grid_detector import GridDetector
 # Default floor-to-floor height when no storey height annotation is present.
 DEFAULT_STOREY_HEIGHT_MM = 3000
 
+# Standard column section sizes used in practice (mm).
+# Dimension normalization snaps annotated or LLM-parsed sizes to the nearest
+# value in this list, eliminating per-column family proliferation caused by
+# floating-point imprecision from the vision LLM (e.g. 298 → 300).
+STANDARD_COLUMN_SIZES = [200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000]
+
+
+def normalize_column_dimensions(width_mm: float, depth_mm: float) -> tuple:
+    """Snap column dimensions to the nearest standard size.
+
+    Square columns (aspect ratio within 5%) are forced to equal width/depth
+    so that Revit creates a single square family instead of many near-square
+    variants with micro-differences.
+    """
+    aspect = width_mm / depth_mm if depth_mm > 0 else 1.0
+    if abs(1.0 - aspect) <= 0.05:
+        avg = (width_mm + depth_mm) / 2
+        std = min(STANDARD_COLUMN_SIZES, key=lambda x: abs(x - avg))
+        return float(std), float(std)
+    std_w = min(STANDARD_COLUMN_SIZES, key=lambda x: abs(x - width_mm))
+    std_d = min(STANDARD_COLUMN_SIZES, key=lambda x: abs(x - depth_mm))
+    return float(std_w), float(std_d)
+
 
 class GeometryGenerator:
     """Build Semantic 3D parameters for native Revit solid objects."""
@@ -404,6 +427,10 @@ class GeometryGenerator:
             # Enforce minimum — prevents Revit family extrusion errors
             width_mm = max(width_mm, self._min_column_mm)
             depth_mm = max(depth_mm, self._min_column_mm)
+
+            # Snap to standard sizes to prevent per-column family proliferation
+            # caused by LLM float imprecision (e.g. 298.5 mm → 300 mm).
+            width_mm, depth_mm = normalize_column_dimensions(width_mm, depth_mm)
 
             shape = "circular" if col.get("is_circular") else col.get("column_shape", "rectangular")
 
