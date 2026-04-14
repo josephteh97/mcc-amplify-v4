@@ -19,6 +19,10 @@ import time
 import threading
 from typing import Dict, List, Optional
 from pathlib import Path
+from backend.services.geometry_generator import (
+    STANDARD_SQUARE_COLUMN_SIZES,
+    STANDARD_CIRCULAR_COLUMN_DIAMETERS,
+)
 from dotenv import load_dotenv
 from loguru import logger
 from PIL import Image
@@ -628,6 +632,12 @@ Column annotation reading (CRITICAL):
   - Circular:    "C20 Ø200", "C20 ⌀300", "C20 200 dia"     → diameter_mm (set shape to "circular")
   - Type mark only: "C1" with separate dimension text nearby → still extract both
   If a column has no readable annotation, omit width_mm / depth_mm / diameter_mm.
+
+Dimension guidelines (use as reference when estimating unannotated columns):
+  - Square columns use standard sizes: {", ".join(str(s) for s in STANDARD_SQUARE_COLUMN_SIZES)} mm
+  - Rectangular columns have varied dimensions: 250×600, 300×750, 400×900, 450×1000, etc.
+  - Circular columns use standard diameters: {", ".join(str(s) for s in STANDARD_CIRCULAR_COLUMN_DIAMETERS)} mm
+  Report exact values when readable from the drawing; otherwise estimate and prefer the nearest standard size.
 
 IMPORTANT: Respond with ONLY valid JSON. No preamble, no explanation, just the JSON object."""
 

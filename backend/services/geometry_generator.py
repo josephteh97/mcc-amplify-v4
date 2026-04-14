@@ -29,11 +29,25 @@ from backend.services.grid_detector import GridDetector
 # Default floor-to-floor height when no storey height annotation is present.
 DEFAULT_STOREY_HEIGHT_MM = 3000
 
-# Standard column section sizes used in practice (mm).
-# Dimension normalization snaps annotated or LLM-parsed sizes to the nearest
-# value in this list, eliminating per-column family proliferation caused by
-# floating-point imprecision from the vision LLM (e.g. 298 → 300).
-STANDARD_COLUMN_SIZES = [200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000]
+# Standard SQUARE column section sizes (mm).
+# Used as snap targets when no PDF annotation is found for square sections —
+# structural engineers specify these standard sizes, so snapping eliminates
+# family proliferation caused by YOLO bbox jitter (e.g. 298 → 300 mm).
+STANDARD_SQUARE_COLUMN_SIZES = [200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000]
+
+# Standard CIRCULAR column diameters (mm).
+STANDARD_CIRCULAR_COLUMN_DIAMETERS = [300, 350, 400, 450, 500, 600, 700, 800, 900, 1000, 1200]
+
+# Rectangular columns are rounded to this increment to remove YOLO noise
+# while preserving actual non-standard dimensions (e.g. 447 → 450 mm).
+RECTANGULAR_ROUNDING_INCREMENT_MM = 10
+
+# Columns with aspect ratio within this fractional threshold are treated as square.
+SQUARE_ASPECT_THRESHOLD = 0.05  # 5%
+
+# Annotated dimensions within this absolute mm difference are treated as a square
+# section (covers sub-mm rounding in PDF text extraction, e.g. "300×300" read as 300/300).
+SQUARE_ANNOTATION_TOLERANCE_MM = 10
 
 
 def _nearest(v: float, candidates: List[float]) -> float:
@@ -41,18 +55,70 @@ def _nearest(v: float, candidates: List[float]) -> float:
     return float(min(candidates, key=lambda c: abs(c - v)))
 
 
-def normalize_column_dimensions(width_mm: float, depth_mm: float) -> Tuple[float, float]:
-    """Snap column dimensions to the nearest standard size.
+def _normalize_square_column(width_mm: float, depth_mm: float) -> Tuple[float, float, str]:
+    """Snap a square column to the nearest standard size."""
+    size = _nearest((width_mm + depth_mm) / 2, STANDARD_SQUARE_COLUMN_SIZES)
+    return size, size, f"SQ{int(size)}"
 
-    Square columns (aspect ratio within 5%) are forced to equal width/depth
-    so that Revit creates a single square family instead of many near-square
-    variants with micro-differences.
+
+def _normalize_rectangular_column(
+    width_mm: float, depth_mm: float
+) -> Tuple[float, float, str]:
+    """Round a rectangular column to the nearest 10 mm to remove YOLO noise."""
+    inc = RECTANGULAR_ROUNDING_INCREMENT_MM
+    # Sort so that (300, 900) and (900, 300) produce the same family key,
+    # preventing proliferation when orientation varies across detections.
+    w, d = sorted([float(round(width_mm / inc) * inc), float(round(depth_mm / inc) * inc)])
+    return w, d, f"RECT{int(w)}x{int(d)}"
+
+
+def _normalize_circular_column(diameter_mm: float) -> Tuple[float, float, str]:
+    """Snap a circular column diameter to the nearest standard value."""
+    size = _nearest(diameter_mm, STANDARD_CIRCULAR_COLUMN_DIAMETERS)
+    return size, size, f"CIRC{int(size)}"
+
+
+def normalize_column_dimensions(
+    width_mm: float,
+    depth_mm: float,
+    column_shape: str = "rectangular",
+    annotated_dimensions: Optional[Tuple[float, float]] = None,
+) -> Tuple[float, float, str]:
+    """Normalize column dimensions based on shape and annotation availability.
+
+    Priority:
+      1. annotated_dimensions (from PDF text) — trusted directly; dimensions within
+         SQUARE_ANNOTATION_TOLERANCE_MM of each other are treated as square.
+      2. column_shape == "circular"  → snap to STANDARD_CIRCULAR_COLUMN_DIAMETERS.
+      3. column_shape == "square" or aspect ratio within SQUARE_ASPECT_THRESHOLD
+         → snap to STANDARD_SQUARE_COLUMN_SIZES.
+      4. Rectangular fallback → round to RECTANGULAR_ROUNDING_INCREMENT_MM to
+         eliminate YOLO noise while preserving actual non-standard dimensions.
+
+    Returns:
+        (width_mm, depth_mm, family_suffix) where family_suffix is a stable
+        string for Revit family naming: "SQ300", "RECT250x600", "CIRC500".
     """
+    # Priority 1: trust annotated dimensions read from PDF text
+    if annotated_dimensions is not None:
+        ann_w, ann_d = annotated_dimensions
+        if ann_w > 0 and ann_d > 0:
+            if abs(ann_w - ann_d) < SQUARE_ANNOTATION_TOLERANCE_MM:
+                size = max(ann_w, ann_d)
+                return float(size), float(size), f"SQ{int(size)}"
+            return float(ann_w), float(ann_d), f"RECT{int(min(ann_w, ann_d))}x{int(max(ann_w, ann_d))}"
+
+    # Priority 2: circular sections → snap to standard diameters
+    if column_shape == "circular":
+        return _normalize_circular_column(width_mm)
+
+    # Priority 3: square (explicit label or aspect ratio)
     aspect = width_mm / depth_mm if depth_mm > 0 else 1.0
-    if abs(1.0 - aspect) <= 0.05:
-        snapped = _nearest((width_mm + depth_mm) / 2, STANDARD_COLUMN_SIZES)
-        return snapped, snapped
-    return _nearest(width_mm, STANDARD_COLUMN_SIZES), _nearest(depth_mm, STANDARD_COLUMN_SIZES)
+    if column_shape == "square" or abs(1.0 - aspect) <= SQUARE_ASPECT_THRESHOLD:
+        return _normalize_square_column(width_mm, depth_mm)
+
+    # Priority 4: rectangular — preserve actual dimensions, just remove noise
+    return _normalize_rectangular_column(width_mm, depth_mm)
 
 
 class GeometryGenerator:
@@ -395,7 +461,6 @@ class GeometryGenerator:
     ) -> List[Dict]:
         """Generate parameters for Revit Column creation at grid intersections."""
         column_params = []
-        px_per_mm = grid_info.get("pixels_per_mm", 1.0)
 
         for col in columns_2d:
             center = col.get("center")
@@ -408,10 +473,17 @@ class GeometryGenerator:
             cx_mm, cy_mm = self._px_to_world(center[0], center[1], grid_info)
             cx_mm, cy_mm = self._snap_to_nearest_grid(cx_mm, cy_mm, grid_info)
 
-            # ── Dimension priority ─────────────────────────────────────────────
-            # 1. Circular annotation  (e.g. "Ø200" read by AI or text parser)
-            # 2. Rectangular annotation (e.g. "C1 800x800")
-            # 3. YOLO pixel bbox → mm via pixels_per_mm  (least reliable)
+            shape = "circular" if col.get("is_circular") else col.get("column_shape", "rectangular")
+
+            # ── Dimension source priority ──────────────────────────────────────
+            # 1. Circular annotation  (Ø200 → diameter_mm)
+            # 2. Rectangular/square annotation  (C1 800×800 → width_mm/depth_mm)
+            # 3. No annotation → safe structural default (_min_column_mm)
+            # Circular columns always snap to STANDARD_CIRCULAR_COLUMN_DIAMETERS
+            # regardless of annotated value; annotated_dims stays None so Priority 2
+            # fires inside normalize_column_dimensions.
+            annotated_dims: Optional[Tuple[float, float]] = None
+            has_rect_annotation = False
             if col.get("is_circular") and col.get("diameter_mm"):
                 diam     = float(col["diameter_mm"])
                 width_mm = diam
@@ -419,10 +491,11 @@ class GeometryGenerator:
             elif col.get("width_mm") and col.get("depth_mm"):
                 width_mm = float(col["width_mm"])
                 depth_mm = float(col["depth_mm"])
+                has_rect_annotation = True
             else:
-                # No PDF annotation was found by _annotate_columns_from_vector_text.
+                # No PDF annotation found — use safe structural default.
                 # YOLO pixel bboxes are too noisy for dimension extraction on
-                # structural drawings — use the safe structural default instead.
+                # structural drawings.
                 width_mm = self._min_column_mm
                 depth_mm = self._min_column_mm
 
@@ -430,21 +503,27 @@ class GeometryGenerator:
             width_mm = max(width_mm, self._min_column_mm)
             depth_mm = max(depth_mm, self._min_column_mm)
 
-            width_mm, depth_mm = normalize_column_dimensions(width_mm, depth_mm)
+            if has_rect_annotation:
+                annotated_dims = (width_mm, depth_mm)
 
-            shape = "circular" if col.get("is_circular") else col.get("column_shape", "rectangular")
+            width_mm, depth_mm, family_suffix = normalize_column_dimensions(
+                width_mm, depth_mm,
+                column_shape=shape,
+                annotated_dimensions=annotated_dims,
+            )
 
             column_params.append({
-                "id":        col.get("id"),
-                "type_mark": col.get("type_mark"),
-                "location":  {"x": cx_mm, "y": cy_mm, "z": 0.0},
-                "width":     round(width_mm, 1),
-                "depth":     round(depth_mm, 1),
-                "height":    col.get("ceiling_height", self.default_wall_height),
-                "shape":     shape,
-                "material":  col.get("material", "Concrete"),
-                "level":     "Level 0",
-                "top_level": "Level 1",
+                "id":          col.get("id"),
+                "type_mark":   col.get("type_mark"),
+                "family_type": family_suffix,
+                "location":    {"x": cx_mm, "y": cy_mm, "z": 0.0},
+                "width":       round(width_mm, 1),
+                "depth":       round(depth_mm, 1),
+                "height":      col.get("ceiling_height", self.default_wall_height),
+                "shape":       shape,
+                "material":    col.get("material", "Concrete"),
+                "level":       "Level 0",
+                "top_level":   "Level 1",
             })
         return column_params
 
