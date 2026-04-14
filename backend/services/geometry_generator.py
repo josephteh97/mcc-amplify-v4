@@ -209,11 +209,9 @@ class GeometryGenerator:
                 "Check that dimension annotations exist between grid lines."
             )
 
-        rotation = grid_info.get("page_rotation", 0)
-
         # Vertical grid lines — run full height (Y direction)
         for i, _ in enumerate(x_lines):
-            x_mm  = sum(x_sp[:i]) if i > 0 else 0.0
+            x_mm  = sum(x_sp[:i])
             label = x_labels[i] if i < len(x_labels) else str(i + 1)
             grids.append({
                 "name":  label,
@@ -222,16 +220,12 @@ class GeometryGenerator:
             })
 
         # Horizontal grid lines — run full width (X direction)
-        # For /Rotate 90 PDFs: y_labels[0] is the topmost architectural H-line
-        # (e.g. BB), but y_lines_px[0] maps to device-left (small device-X).
-        # In Revit's Y-up coordinate system the topmost line must have the
-        # LARGEST y_mm, so we flip the accumulation order.
+        # y_lines_px[0] is the topmost line in the image (smallest pixel Y).
+        # Image Y increases downward; Revit Y increases upward.  The topmost
+        # architectural line must therefore receive the LARGEST Revit Y, so the
+        # accumulation order is always flipped regardless of page rotation.
         for i, _ in enumerate(y_lines):
-            raw_y = sum(y_sp[:i]) if i > 0 else 0.0
-            if rotation == 90:
-                y_mm = total_y_mm - raw_y
-            else:
-                y_mm = raw_y
+            y_mm = total_y_mm - sum(y_sp[:i])
             label = y_labels[i] if i < len(y_labels) else chr(65 + i)
             grids.append({
                 "name":  label,
@@ -246,8 +240,14 @@ class GeometryGenerator:
     # ------------------------------------------------------------------
 
     def _px_to_world(self, px: float, py: float, grid_info: Dict) -> Tuple[float, float]:
-        """Convert a single pixel coordinate pair to real-world mm using the grid."""
-        return self.grid_detector.pixel_to_world(px, py, grid_info)
+        """Convert pixel coords to real-world mm with Y-axis inversion.
+
+        pixel_to_world returns raw_y_mm increasing downward (image origin = top-left).
+        Revit's Y axis increases upward, so flip: revit_y = total_y_mm - raw_y_mm.
+        """
+        x_mm, raw_y_mm = self.grid_detector.pixel_to_world(px, py, grid_info)
+        total_y_mm = sum(grid_info.get("y_spacings_mm", []))
+        return x_mm, total_y_mm - raw_y_mm
 
     def _snap_to_nearest_grid(
         self, x_mm: float, y_mm: float, grid_info: Dict
@@ -266,7 +266,6 @@ class GeometryGenerator:
         """
         x_sp = grid_info.get("x_spacings_mm", [])
         y_sp = grid_info.get("y_spacings_mm", [])
-        rotation = grid_info.get("page_rotation", 0)
         n_x = len(grid_info.get("x_lines_px", []))
         n_y = len(grid_info.get("y_lines_px", []))
 
@@ -276,12 +275,10 @@ class GeometryGenerator:
         # World x positions of vertical grid lines (left → right)
         x_grid = [sum(x_sp[:i]) for i in range(n_x)]
 
-        # World y positions of horizontal grid lines (rotation-aware)
-        if rotation == 90:
-            total_y = sum(y_sp) if y_sp else 0.0
-            y_grid = [total_y - (sum(y_sp[:i]) if i > 0 else 0.0) for i in range(n_y)]
-        else:
-            y_grid = [sum(y_sp[:i]) if i > 0 else 0.0 for i in range(n_y)]
+        # World y positions of horizontal grid lines — always Y-flipped to match
+        # _px_to_world and _build_grid_commands (image Y↓ → Revit Y↑).
+        total_y = sum(y_sp)
+        y_grid = [total_y - sum(y_sp[:i]) for i in range(n_y)]
 
         # Tolerance: half the smallest bay in each axis
         all_sp = (x_sp or []) + (y_sp or [])
