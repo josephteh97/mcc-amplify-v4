@@ -103,6 +103,86 @@ The script waits for the backend to be ready before starting the frontend. Press
 
 ## Pipeline Stages
 
+```mermaid
+flowchart TD
+    PDF(["📄 PDF Upload"])
+
+    PDF --> SEC
+
+    subgraph SEC["① Security & Size Check"]
+        sec["SecurePDFRenderer
+        Validate magic bytes · cap render DPI"]
+    end
+
+    SEC --> VEC & RAS
+
+    subgraph PAR["② Parallel Tracks"]
+        VEC["Track A · Vector Extraction
+        VectorProcessor
+        PyMuPDF paths + text spans"]
+        RAS["Track B · Raster Render
+        StreamingProcessor → YOLOv11
+        walls · doors · windows · columns · rooms"]
+    end
+
+    VEC & RAS --> FUS
+
+    subgraph FUSBOX["③ Hybrid Fusion"]
+        FUS["HybridFusionPipeline
+        Snap YOLO detections to vector lines
+        Refine wall endpoints"]
+    end
+
+    FUS --> GRD
+
+    subgraph GRDBOX["④ Grid Detection"]
+        GRD["GridDetector
+        Structural grid from PDF text labels
+        Column schedule scan
+        px → real-world mm scale"]
+    end
+
+    GRD --> SEM
+
+    subgraph SEMBOX["⑤ Semantic AI  — first backend wins"]
+        SEM["SemanticAnalyzer"]
+        SEM -->|priority 1| OLL["Ollama
+        gemma3:4b / qwen3-vl"]
+        SEM -->|priority 2| GEM["Google Gemini API"]
+        SEM -->|priority 3| ANT["Anthropic Claude API"]
+    end
+
+    OLL & GEM & ANT --> GEO
+
+    subgraph GEOBOX["⑥ 3D Geometry Generation"]
+        GEO["GeometryGenerator
+        Image coords → Revit world mm
+        Y-axis inversion · grid snapping
+        Build Revit API recipe JSON"]
+    end
+
+    GEO --> RVTBOX & GLTBOX
+
+    subgraph RVTBOX["⑦a  RVT Export  (Linux → Windows)"]
+        EXP["RvtExporter · RevitClient
+        HTTP POST to Revit 2023 C# Add-in
+        Builds levels · grids · walls
+        columns · doors · windows · slabs"]
+        EXP --> WRN{"Revit warnings?"}
+        WRN -->|"yes · attempt ≤ 2"| FIX["AI correction round
+        SemanticAnalyzer patches recipe"]
+        FIX -->|resend| EXP
+        WRN -->|"no / accepted"| RVT["🏗 {pdf_stem}_{uuid}.rvt"]
+    end
+
+    subgraph GLTBOX["⑦b  glTF Export"]
+        GLTF["GltfExporter
+        .glb — walls · columns · floors · openings"]
+    end
+
+    RVT & GLTF --> DONE(["✅ BIM model + 3D preview ready for download"])
+```
+
 | # | Stage | Component | Notes |
 |---|-------|-----------|-------|
 | 1 | Security & size check | `SecurePDFRenderer` | Caps render DPI to prevent resource exhaustion |
@@ -111,9 +191,9 @@ The script waits for the backend to be ready before starting the frontend. Press
 | 2c | Element detection | YOLO (inline) | YOLOv11 detects walls, doors, windows, columns, rooms |
 | 3 | Hybrid fusion | `HybridFusionPipeline` | Snaps YOLO wall endpoints to nearest vector line |
 | 4 | Grid detection | `GridDetector` | Derives real-world scale from structural grid lines + dimension annotations; scale text ignored |
-| 5 | Semantic AI analysis | `SemanticAnalyzer` | Calls Gemini/Claude vision API; enriches elements with material, type, room purpose |
-| 6 | 3D geometry | `GeometryGenerator` | Converts 2D elements to Revit API parameters (grid-based mm coords) |
-| 7 | BIM export | `RvtExporter` + `GltfExporter` | Sends to Windows Revit; also writes `.glb` with walls, columns, doors, windows, floors |
+| 5 | Semantic AI analysis | `SemanticAnalyzer` | Ollama (gemma3:4b) → Gemini → Claude; enriches elements with material, type, room purpose |
+| 6 | 3D geometry | `GeometryGenerator` | Converts 2D elements to Revit API parameters (grid-based mm coords, Y-axis inverted for Revit) |
+| 7 | BIM export | `RvtExporter` + `GltfExporter` | Sends to Windows Revit with closed-loop warning correction; also writes `.glb` |
 
 ---
 
