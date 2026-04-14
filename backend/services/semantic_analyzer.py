@@ -212,6 +212,7 @@ class SemanticAnalyzer:
 
         # Vision model preference order — best for floor plan analysis first
         VISION_CANDIDATES = [
+            "gemma3:4b",
             "qwen3-vl:latest", "qwen3-vl:8b", "qwen3-vl:4b", "qwen3-vl:2b",
             "qwen2.5vl:7b", "qwen2.5vl:3b",
             "llava:13b", "llava:7b",
@@ -486,13 +487,34 @@ class SemanticAnalyzer:
         )
         return message.content[0].text
 
+    def _stream_ollama(self, payload: dict) -> str:
+        """POST payload to Ollama /api/generate and return the full streamed text.
+
+        Streaming keeps the connection alive token-by-token, so the per-chunk
+        read timeout (120 s) is far more forgiving than a single timeout for the
+        entire response — critical for large models running partly on CPU.
+        """
+        resp = self.client.post(
+            f"{OLLAMA_URL}/api/generate",
+            json=payload,
+            timeout=(10, 120),
+            stream=True,
+        )
+        resp.raise_for_status()
+        parts = []
+        for line in resp.iter_lines():
+            if line:
+                chunk = json.loads(line)
+                parts.append(chunk.get("response", ""))
+                if chunk.get("done"):
+                    break
+        return "".join(parts)
+
     def _call_ollama(self, prompt: str, image: Image.Image, max_tokens: int = 32768) -> str:
-        """Call Ollama with a vision model (e.g., llava)."""
+        """Call Ollama with a vision prompt and image."""
         import base64
         import io
-        import requests
 
-        # Convert PIL image to base64 JPEG
         buf = io.BytesIO()
         image.save(buf, format="JPEG", quality=85)
         b64_image = base64.standard_b64encode(buf.getvalue()).decode()
@@ -501,21 +523,14 @@ class SemanticAnalyzer:
             "model": self.model_id,
             "prompt": prompt,
             "images": [b64_image],
-            "stream": False,
-            "options": {
-                "temperature": 0.1,
-                "num_predict": max_tokens,
-            }
+            "stream": True,
+            "options": {"temperature": 0.1, "num_predict": max_tokens},
         }
-
         try:
-            resp = self.client.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=120)
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("response", "")
+            return self._stream_ollama(payload)
         except Exception as e:
             logger.error(f"Ollama call failed: {e}")
-            raise  # Re-raise so the caller can handle
+            raise
 
     # ------------------------------------------------------------------
     # Prompt builder
@@ -798,22 +813,14 @@ If you cannot determine a safe correction, return:
 
     def _call_ollama_text(self, prompt: str, max_tokens: int = 2048) -> str:
         """Call Ollama with a text-only prompt (no image)."""
-        import requests
-
         payload = {
             "model": self.model_id,
             "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.0,
-                "num_predict": max_tokens,
-            }
+            "stream": True,
+            "options": {"temperature": 0.0, "num_predict": max_tokens},
         }
         try:
-            resp = self.client.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=60)
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("response", "")
+            return self._stream_ollama(payload)
         except Exception as e:
             logger.error(f"Ollama text call failed: {e}")
             raise
