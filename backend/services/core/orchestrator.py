@@ -96,6 +96,7 @@ class PipelineOrchestrator:
         pdf_path: str,
         job_id: str,
         project_name: str = "Project",
+        pdf_filename: str = "",
         progress_callback: Optional[Callable[[int, str], None]] = None,
     ):
         """
@@ -288,12 +289,12 @@ class PipelineOrchestrator:
             _use_agent  = os.getenv("USE_AGENT_BUILDER", "").lower() == "true"
             try:
                 if _use_agent:
-                    rvt_path, vision_diff = await self._run_agent_export(recipe, job_id, progress)
+                    rvt_path, vision_diff = await self._run_agent_export(recipe, job_id, progress, pdf_filename)
                 else:
                     current_recipe = recipe
                     for _attempt in range(3):          # attempt 0, 1, 2
                         rvt_path, revit_warnings = await self.rvt_exporter.export(
-                            transaction_path, job_id
+                            transaction_path, job_id, pdf_filename
                         )
 
                         if not revit_warnings or _attempt == 2:
@@ -379,6 +380,7 @@ class PipelineOrchestrator:
         recipe: dict,
         job_id: str,
         progress_fn: Callable[[int, str], None],
+        pdf_filename: str = "",
     ) -> tuple[str | None, dict | None]:
         """
         P6: Use the Claude MCP agent to build the Revit model step-by-step.
@@ -398,7 +400,7 @@ class PipelineOrchestrator:
         except ImportError as e:
             logger.warning(f"RevitAgent import failed ({e}) — falling back to batch export")
             rvt_path, _ = await self.rvt_exporter.export(
-                f"data/models/rvt/{job_id}_transaction.json", job_id
+                f"data/models/rvt/{job_id}_transaction.json", job_id, pdf_filename
             )
             return rvt_path, None
 
@@ -1138,7 +1140,7 @@ class PipelineOrchestrator:
         logger.info(f"glTF rebuilt for job {job_id}")
         return gltf_path
 
-    async def rebuild_rvt(self, job_id: str) -> str:
+    async def rebuild_rvt(self, job_id: str, pdf_filename: str = "") -> str:
         """
         Send the (user-corrected) on-disk recipe to the Revit server.
         Slow path — triggers the full Windows Revit build.
@@ -1146,7 +1148,7 @@ class PipelineOrchestrator:
         transaction_path = f"data/models/rvt/{job_id}_transaction.json"
         if not Path(transaction_path).exists():
             raise FileNotFoundError(f"Recipe not found: {transaction_path}")
-        rvt_path, warnings = await self.rvt_exporter.export(transaction_path, job_id)
+        rvt_path, warnings = await self.rvt_exporter.export(transaction_path, job_id, pdf_filename)
         if warnings:
             logger.warning(f"Revit rebuild warnings for {job_id}: {warnings}")
         logger.info(f"RVT rebuilt for job {job_id}")

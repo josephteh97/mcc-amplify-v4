@@ -20,11 +20,13 @@ class FloorPlanPipeline:
         pdf_path: str,
         job_id: str,
         project_name: Optional[str] = None,
+        pdf_filename: str = "",
         progress_callback: Optional[Callable[[int, str], None]] = None,
     ) -> Dict[str, Any]:
         return await self.orchestrator.run_pipeline(
             pdf_path,
             job_id,
             project_name or "Project",
+            pdf_filename=pdf_filename,
             progress_callback=progress_callback,
         )

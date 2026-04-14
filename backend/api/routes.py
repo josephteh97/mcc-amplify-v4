@@ -132,8 +132,9 @@ async def _run_pipeline_task(job_id: str, file_path: str, project_name: Optional
             "message":  msg,
         }))
 
+    pdf_filename = job_status[job_id].get("filename", "")
     try:
-        result = await pipeline.process(file_path, job_id, project_name, progress_callback=on_progress)
+        result = await pipeline.process(file_path, job_id, project_name, pdf_filename=pdf_filename, progress_callback=on_progress)
         job_status[job_id].update({"status": "completed", "progress": 100, "result": result})
         await ws_manager.send_progress(job_id, {
             "type":     "completed",
@@ -170,7 +171,7 @@ async def download_rvt(job_id: str):
     rvt_path = job_status[job_id]["result"]["files"].get("rvt")
     if not rvt_path or not Path(rvt_path).exists():
         raise HTTPException(404, "RVT file not available — Revit server may have been unreachable")
-    return FileResponse(rvt_path, media_type="application/octet-stream", filename=f"{job_id}.rvt")
+    return FileResponse(rvt_path, media_type="application/octet-stream", filename=Path(rvt_path).name)
 
 
 @router.get("/download/gltf/{job_id}")
@@ -341,7 +342,8 @@ async def rebuild_rvt_endpoint(job_id: str, background_tasks: BackgroundTasks):
 
 async def _run_rebuild_task(job_id: str):
     try:
-        rvt_path = await pipeline.orchestrator.rebuild_rvt(job_id)
+        pdf_filename = job_status[job_id].get("filename", "")
+        rvt_path = await pipeline.orchestrator.rebuild_rvt(job_id, pdf_filename)
         job_status[job_id].update({
             "status":   "completed",
             "progress": 100,

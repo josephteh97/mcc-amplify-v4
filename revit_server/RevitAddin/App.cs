@@ -351,7 +351,8 @@ namespace RevitModelBuilderAddin
 
             string outputDir  = @"C:\RevitOutput";
             Directory.CreateDirectory(outputDir);
-            string outputPath = Path.Combine(outputDir, $"{buildReq.JobId}.rvt");
+            string rvtName    = RvtFileName(buildReq.PdfFilename, buildReq.JobId);
+            string outputPath = Path.Combine(outputDir, rvtName);
 
             lock (_warningsLock) { _sessionWarnings.Clear(); }
 
@@ -381,7 +382,7 @@ namespace RevitModelBuilderAddin
                 $"HTTP/1.1 200 OK\r\n" +
                 $"Content-Type: application/octet-stream\r\n" +
                 $"Content-Length: {rvtBytes.Length}\r\n" +
-                $"Content-Disposition: attachment; filename={buildReq.JobId}.rvt\r\n" +
+                $"Content-Disposition: attachment; filename={rvtName}\r\n" +
                 $"X-Revit-Warnings: {warningsJson}\r\n" +
                 $"X-Revit-Families: {familiesJson}\r\n" +
                 $"Connection: close\r\n\r\n";
@@ -1401,6 +1402,25 @@ namespace RevitModelBuilderAddin
         {
             const string LOG = @"C:\RevitOutput\session_log.txt";
             try { File.AppendAllText(LOG, $"[{DateTime.Now:HH:mm:ss}] {msg}\r\n"); } catch { }
+        }
+
+        /// <summary>
+        /// Build the .rvt filename: "{safe_pdf_stem}_{jobId}.rvt" or "{jobId}.rvt".
+        /// </summary>
+        private static string RvtFileName(string pdfFilename, string jobId)
+        {
+            if (!string.IsNullOrWhiteSpace(pdfFilename))
+            {
+                string stem = System.IO.Path.GetFileNameWithoutExtension(pdfFilename);
+                string safe = System.Text.RegularExpressions.Regex
+                    .Replace(stem, @"[^\w\-]", "_");
+                safe = System.Text.RegularExpressions.Regex
+                    .Replace(safe, @"_+", "_")
+                    .Trim('_');
+                if (!string.IsNullOrEmpty(safe))
+                    return $"{safe}_{jobId}.rvt";
+            }
+            return $"{jobId}.rvt";
         }
     }
 
@@ -2885,6 +2905,7 @@ namespace RevitModelBuilderAddin
     public class BuildRequest
     {
         [JsonProperty("job_id")]           public string JobId           { get; set; } = "";
+        [JsonProperty("pdf_filename")]     public string PdfFilename     { get; set; } = "";
         [JsonProperty("transaction_json")] public string TransactionJson { get; set; } = "";
     }
 

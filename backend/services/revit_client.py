@@ -24,8 +24,18 @@ import asyncio
 import httpx
 import json as _json
 import os
+import re
 from pathlib import Path
 from loguru import logger
+
+
+def _rvt_stem(pdf_filename: str, job_id: str) -> str:
+    if pdf_filename:
+        stem = Path(pdf_filename).stem
+        safe = re.sub(r"_+", "_", re.sub(r"[^\w\-]", "_", stem)).strip("_")
+        if safe:
+            return f"{safe}_{job_id}"
+    return job_id
 
 
 def _print_revit_warnings(job_id: str, warnings: list) -> None:
@@ -86,7 +96,9 @@ class RevitClient:
     # Build model
     # ------------------------------------------------------------------
 
-    async def build_model(self, transaction_path: str, job_id: str) -> tuple:
+    async def build_model(
+        self, transaction_path: str, job_id: str, pdf_filename: str = ""
+    ) -> tuple:
         """
         Send a transaction JSON to the Revit server and retrieve the .rvt file.
 
@@ -96,16 +108,18 @@ class RevitClient:
                        empty list in file-drop mode or when no warnings occurred.
         """
         if self.mode == "file":
-            rvt_path = await self._build_via_file_drop(transaction_path, job_id)
+            rvt_path = await self._build_via_file_drop(transaction_path, job_id, pdf_filename)
             return rvt_path, []
-        return await self._build_via_http(transaction_path, job_id)
+        return await self._build_via_http(transaction_path, job_id, pdf_filename)
 
     # ── HTTP mode ─────────────────────────────────────────────────────────────
 
     _MAX_RETRIES = 3          # attempts before giving up
     _RETRY_BASE_S = 3         # base back-off: 3 s, 6 s, …
 
-    async def _build_via_http(self, transaction_path: str, job_id: str) -> str:
+    async def _build_via_http(
+        self, transaction_path: str, job_id: str, pdf_filename: str = ""
+    ) -> str:
         """POST the transaction JSON to the add-in's HTTP server (with retry)."""
         with open(transaction_path, "r") as f:
             transaction_json = f.read()
@@ -122,6 +136,7 @@ class RevitClient:
                         f"{self.server_url}/build-model",
                         json={
                             "job_id":           job_id,
+                            "pdf_filename":     pdf_filename,
                             "transaction_json": transaction_json,
                         },
                         headers={"X-API-Key": self.api_key},
@@ -141,7 +156,7 @@ class RevitClient:
                         "Check that the Add-in is loaded inside Revit 2023."
                     )
 
-                rvt_path = f"data/models/rvt/{job_id}.rvt"
+                rvt_path = f"data/models/rvt/{_rvt_stem(pdf_filename, job_id)}.rvt"
                 Path(rvt_path).parent.mkdir(parents=True, exist_ok=True)
                 with open(rvt_path, "wb") as f:
                     f.write(content)
@@ -195,7 +210,9 @@ class RevitClient:
 
     # ── File-drop / macro mode ────────────────────────────────────────────────
 
-    async def _build_via_file_drop(self, transaction_path: str, job_id: str) -> str:
+    async def _build_via_file_drop(
+        self, transaction_path: str, job_id: str, pdf_filename: str = ""
+    ) -> str:
         """
         Write pending.json to the shared directory and wait for the Revit macro
         to write the .rvt output.  Poll every 2 s for up to self.timeout seconds.
@@ -235,7 +252,7 @@ class RevitClient:
         except Exception:
             pass
 
-        rvt_path = f"data/models/rvt/{job_id}.rvt"
+        rvt_path = f"data/models/rvt/{_rvt_stem(pdf_filename, job_id)}.rvt"
         Path(rvt_path).parent.mkdir(parents=True, exist_ok=True)
 
         with open(rvt_src_path, "rb") as fin, open(rvt_path, "wb") as fout:

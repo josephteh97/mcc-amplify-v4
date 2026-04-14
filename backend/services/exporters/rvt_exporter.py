@@ -9,7 +9,9 @@ class RvtExporter:
     def __init__(self):
         self.client = RevitClient()
 
-    async def export(self, transaction_path: str, job_id: str) -> tuple:
+    async def export(
+        self, transaction_path: str, job_id: str, pdf_filename: str = ""
+    ) -> tuple:
         """
         Build model on Windows Revit server.
 
@@ -18,4 +20,4 @@ class RvtExporter:
             warnings — Revit build warnings (column too thin, etc.) captured by
                        the C# IFailuresPreprocessor; empty when all is clean.
         """
-        return await self.client.build_model(transaction_path, job_id)
+        return await self.client.build_model(transaction_path, job_id, pdf_filename)
