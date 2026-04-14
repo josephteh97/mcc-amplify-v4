@@ -477,7 +477,8 @@ class GeometryGenerator:
             cx_mm, cy_mm = self._px_to_world(center[0], center[1], grid_info)
             cx_mm, cy_mm = self._snap_to_nearest_grid(cx_mm, cy_mm, grid_info)
 
-            # "column_shape" is set by the annotation extractor; "shape" by the semantic LLM.
+            # Prefer annotation-extractor key ("column_shape") over LLM key ("shape") so
+            # precise PDF text reads aren't overridden by vaguer visual classification.
             shape = (
                 "circular" if col.get("is_circular")
                 else col.get("column_shape") or col.get("shape", "rectangular")
