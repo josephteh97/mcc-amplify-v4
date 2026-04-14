@@ -93,6 +93,19 @@ provided tools.
 - After `revit_export_session` succeeds, output ONLY the following JSON and stop:
   {"status": "done", "rvt_path": "<path>", "placed_count": <n>, "skipped": [{"element": "<desc>", "reason": "<reason>"}]}
 
+## Column family mapping
+Each column in the transaction has a `family_type` field and a `shape` field.
+
+| `shape`      | `family_type` example | Search keyword               | Expected Revit family               |
+|--------------|-----------------------|------------------------------|-------------------------------------|
+| rectangular  | RECT200x250           | "200x250" + "concrete"       | CJY_Concrete-Rectangular-Column     |
+| rectangular  | RECT300x300           | "300x300" + "concrete"       | CJY_Concrete-Rectangular-Column     |
+| circular     | CIRC300               | "round" or "circular" + "300"| CJY_RC Round Column                 |
+
+- Square columns are stored as RECT{n}x{n} — they use the same rectangular concrete family.
+- NEVER load or place `M_W Shapes-Column` for a concrete column — that is a steel I-beam.
+  If only W-shapes appear in the search results, search again with keyword "concrete" or "CJY".
+
 ## Coordinate notes
 - All coordinates are in millimetres relative to the structural grid origin.
 - x_mm → east, y_mm → north, z_mm → elevation above base level.

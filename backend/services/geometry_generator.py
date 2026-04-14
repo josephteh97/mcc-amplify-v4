@@ -56,9 +56,13 @@ def _nearest(v: float, candidates: List[float]) -> float:
 
 
 def _normalize_square_column(width_mm: float, depth_mm: float) -> Tuple[float, float, str]:
-    """Snap a square column to the nearest standard size."""
+    """Snap a square column to the nearest standard size.
+
+    Returns a RECT{n}x{n} suffix (not SQ{n}) so the Revit agent can match it
+    against the concrete rectangular column family (CJY_Concrete-Rectangular-Column::{n}x{n}mm).
+    """
     size = _nearest((width_mm + depth_mm) / 2, STANDARD_SQUARE_COLUMN_SIZES)
-    return size, size, f"SQ{int(size)}"
+    return size, size, f"RECT{int(size)}x{int(size)}"
 
 
 def _normalize_rectangular_column(
@@ -91,13 +95,13 @@ def normalize_column_dimensions(
          SQUARE_ANNOTATION_TOLERANCE_MM of each other are treated as square.
       2. column_shape == "circular"  → snap to STANDARD_CIRCULAR_COLUMN_DIAMETERS.
       3. column_shape == "square" or aspect ratio within SQUARE_ASPECT_THRESHOLD
-         → snap to STANDARD_SQUARE_COLUMN_SIZES.
+         → snap to STANDARD_SQUARE_COLUMN_SIZES; suffix is RECT{n}x{n}.
       4. Rectangular fallback → round to RECTANGULAR_ROUNDING_INCREMENT_MM to
          eliminate YOLO noise while preserving actual non-standard dimensions.
 
     Returns:
         (width_mm, depth_mm, family_suffix) where family_suffix is a stable
-        string for Revit family naming: "SQ300", "RECT250x600", "CIRC500".
+        string for Revit family naming: "RECT300x300", "RECT250x600", "CIRC500".
     """
     # Priority 1: trust annotated dimensions read from PDF text
     if annotated_dimensions is not None:
@@ -105,7 +109,7 @@ def normalize_column_dimensions(
         if ann_w > 0 and ann_d > 0:
             if abs(ann_w - ann_d) < SQUARE_ANNOTATION_TOLERANCE_MM:
                 size = max(ann_w, ann_d)
-                return float(size), float(size), f"SQ{int(size)}"
+                return float(size), float(size), f"RECT{int(size)}x{int(size)}"
             return float(ann_w), float(ann_d), f"RECT{int(min(ann_w, ann_d))}x{int(max(ann_w, ann_d))}"
 
     # Priority 2: circular sections → snap to standard diameters
@@ -473,7 +477,11 @@ class GeometryGenerator:
             cx_mm, cy_mm = self._px_to_world(center[0], center[1], grid_info)
             cx_mm, cy_mm = self._snap_to_nearest_grid(cx_mm, cy_mm, grid_info)
 
-            shape = "circular" if col.get("is_circular") else col.get("column_shape", "rectangular")
+            # "column_shape" is set by the annotation extractor; "shape" by the semantic LLM.
+            shape = (
+                "circular" if col.get("is_circular")
+                else col.get("column_shape") or col.get("shape", "rectangular")
+            )
 
             # ── Dimension source priority ──────────────────────────────────────
             # 1. Circular annotation  (Ø200 → diameter_mm)
