@@ -94,17 +94,24 @@ provided tools.
   {"status": "done", "rvt_path": "<path>", "placed_count": <n>, "skipped": [{"element": "<desc>", "reason": "<reason>"}]}
 
 ## Column family mapping
-Each column in the transaction has a `family_type` field and a `shape` field.
 
-| `shape`      | `family_type` example | Search keyword               | Expected Revit family               |
-|--------------|-----------------------|------------------------------|-------------------------------------|
-| rectangular  | RECT200x250           | "200x250" + "concrete"       | CJY_Concrete-Rectangular-Column     |
-| rectangular  | RECT300x300           | "300x300" + "concrete"       | CJY_Concrete-Rectangular-Column     |
-| circular     | CIRC300               | "round" or "circular" + "300"| CJY_RC Round Column                 |
+Each column has a `family_type` prefix that encodes shape:
+  - `RECT{W}x{D}` → rectangular or square concrete column
+  - `CIRC{D}`     → circular (round) concrete column
 
-- Square columns are stored as RECT{n}x{n} — they use the same rectangular concrete family.
-- NEVER load or place `M_W Shapes-Column` for a concrete column — that is a steel I-beam.
-  If only W-shapes appear in the search results, search again with keyword "concrete" or "CJY".
+**How to search:** Strip the prefix and use the dimension string as the keyword.
+
+| `family_type` example | Strip to keyword | `search_family_library` call           | Expected family                 |
+|-----------------------|------------------|----------------------------------------|---------------------------------|
+| RECT200x250           | "200x250"        | keyword="200x250", cat=StructuralCol   | CJY_Concrete-Rectangular-Column |
+| RECT800x800           | "800x800"        | keyword="800x800", cat=StructuralCol   | CJY_Concrete-Rectangular-Column |
+| CIRC300               | "300" + "round"  | keyword="round", cat=StructuralCol     | CJY_RC Round Column             |
+
+If the exact dimension is not a type in the found family, pick the closest available type.
+
+- Square columns are `RECT{n}x{n}` — place them with `CJY_Concrete-Rectangular-Column`.
+- NEVER place `M_W Shapes-Column` for a concrete column — it is a steel I-beam, not concrete.
+  If W-shapes are the only result, search again with keyword `"concrete"` instead.
 
 ## Coordinate notes
 - All coordinates are in millimetres relative to the structural grid origin.

@@ -22,6 +22,17 @@ _LIBRARY_INDEX        = Path(__file__).resolve().parents[2] / "data" / "family_l
 _REVIT_DOCS           = Path(__file__).resolve().parents[2] / "data" / "revit_docs"
 _FALLBACK_FAMILY_FOLDER = r"C:\MyDocuments\3. Revit Family Files"
 
+# Cached index — parsed once per process; set to None to force a reload.
+_index_cache: dict | None = None
+
+
+def _load_index() -> dict:
+    global _index_cache
+    if _index_cache is None and _LIBRARY_INDEX.exists():
+        with open(_LIBRARY_INDEX) as f:
+            _index_cache = json.load(f)
+    return _index_cache or {}
+
 # OST category → filename hint words used for fuzzy matching in the fallback folder
 _CATEGORY_HINTS: dict = {
     "ost_structuralcolumns": ["column", "col"],
@@ -75,10 +86,8 @@ async def search_family_library(
     Each family entry includes: family_name, category, windows_rfa_path, types[].
     """
     # ── Tier 1: primary index ──────────────────────────────────────────────────
-    if _LIBRARY_INDEX.exists():
-        with open(_LIBRARY_INDEX) as f:
-            index = json.load(f)
-
+    index = _load_index()
+    if index:
         families: list[dict] = index.get("families", [])
 
         if category:
