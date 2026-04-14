@@ -36,7 +36,11 @@ DEFAULT_STOREY_HEIGHT_MM = 3000
 STANDARD_COLUMN_SIZES = [200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000]
 
 
-def normalize_column_dimensions(width_mm: float, depth_mm: float) -> tuple:
+def _snap_size(v: float) -> float:
+    return float(min(STANDARD_COLUMN_SIZES, key=lambda s: abs(s - v)))
+
+
+def normalize_column_dimensions(width_mm: float, depth_mm: float) -> Tuple[float, float]:
     """Snap column dimensions to the nearest standard size.
 
     Square columns (aspect ratio within 5%) are forced to equal width/depth
@@ -45,12 +49,9 @@ def normalize_column_dimensions(width_mm: float, depth_mm: float) -> tuple:
     """
     aspect = width_mm / depth_mm if depth_mm > 0 else 1.0
     if abs(1.0 - aspect) <= 0.05:
-        avg = (width_mm + depth_mm) / 2
-        std = min(STANDARD_COLUMN_SIZES, key=lambda x: abs(x - avg))
-        return float(std), float(std)
-    std_w = min(STANDARD_COLUMN_SIZES, key=lambda x: abs(x - width_mm))
-    std_d = min(STANDARD_COLUMN_SIZES, key=lambda x: abs(x - depth_mm))
-    return float(std_w), float(std_d)
+        snapped = _snap_size((width_mm + depth_mm) / 2)
+        return snapped, snapped
+    return _snap_size(width_mm), _snap_size(depth_mm)
 
 
 class GeometryGenerator:
@@ -428,8 +429,6 @@ class GeometryGenerator:
             width_mm = max(width_mm, self._min_column_mm)
             depth_mm = max(depth_mm, self._min_column_mm)
 
-            # Snap to standard sizes to prevent per-column family proliferation
-            # caused by LLM float imprecision (e.g. 298.5 mm → 300 mm).
             width_mm, depth_mm = normalize_column_dimensions(width_mm, depth_mm)
 
             shape = "circular" if col.get("is_circular") else col.get("column_shape", "rectangular")
