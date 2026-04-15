@@ -20,8 +20,6 @@ are always created.  Grid lines are placed at Level 0.
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from loguru import logger
-from pathlib import Path
-import json
 
 from backend.services.grid_detector import GridDetector
 
@@ -38,52 +36,14 @@ STANDARD_SQUARE_COLUMN_SIZES = [200, 250, 300, 350, 400, 450, 500, 600, 700, 800
 # Standard CIRCULAR column diameters (mm).
 STANDARD_CIRCULAR_COLUMN_DIAMETERS = [300, 350, 400, 450, 500, 600, 700, 800, 900, 1000, 1200]
 
-# Default column size when no annotation is found.
-DEFAULT_COLUMN_SIZE_MM = 800
-
-# Rectangular columns are rounded to this increment to remove YOLO noise
-# while preserving actual non-standard dimensions (e.g. 447 → 450 mm).
-RECTANGULAR_ROUNDING_INCREMENT_MM = 10
-
 # Columns with aspect ratio within this fractional threshold are treated as square.
 # 20% absorbs YOLO bbox noise (e.g. 720×880 reported for a true 800×800).
 SQUARE_ASPECT_THRESHOLD = 0.20  # 20%
-
-# Annotated dimensions within this absolute mm difference are treated as a square
-# section (covers sub-mm rounding in PDF text extraction, e.g. "300×300" read as 300/300).
-SQUARE_ANNOTATION_TOLERANCE_MM = 10
 
 
 def _nearest(v: float, candidates: List[float]) -> float:
     """Return the element of *candidates* closest to *v* by absolute difference."""
     return float(min(candidates, key=lambda c: abs(c - v)))
-
-
-def _normalize_square_column(width_mm: float, depth_mm: float) -> Tuple[float, float, str]:
-    """Snap a square column to the nearest standard size.
-
-    Returns a RECT{n}x{n} suffix (not SQ{n}) so the Revit agent can match it
-    against the concrete rectangular column family (CJY_Concrete-Rectangular-Column::{n}x{n}mm).
-    """
-    size = _nearest((width_mm + depth_mm) / 2, STANDARD_SQUARE_COLUMN_SIZES)
-    return size, size, f"RECT{int(size)}x{int(size)}"
-
-
-def _normalize_rectangular_column(
-    width_mm: float, depth_mm: float
-) -> Tuple[float, float, str]:
-    """Round a rectangular column to the nearest 10 mm to remove YOLO noise."""
-    inc = RECTANGULAR_ROUNDING_INCREMENT_MM
-    # Sort so that (300, 900) and (900, 300) produce the same family key,
-    # preventing proliferation when orientation varies across detections.
-    w, d = sorted([float(round(width_mm / inc) * inc), float(round(depth_mm / inc) * inc)])
-    return w, d, f"RECT{int(w)}x{int(d)}"
-
-
-def _normalize_circular_column(diameter_mm: float) -> Tuple[float, float, str]:
-    """Snap a circular column diameter to the nearest standard value."""
-    size = _nearest(diameter_mm, STANDARD_CIRCULAR_COLUMN_DIAMETERS)
-    return size, size, f"CIRC{int(size)}"
 
 
 def normalize_column_dimensions(
