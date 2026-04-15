@@ -521,16 +521,41 @@ class GeometryGenerator:
                 annotated_dimensions=annotated_dims,
             )
 
+            # Symbol must match an existing family type name verbatim (Newtonsoft
+            # case-insensitive) so C# reuses the type instead of duplicating it.
+            if shape == "circular":
+                family_name = "CJY_RC Round Column"
+                symbol_name = f"Φ{int(width_mm)}"
+            else:
+                family_name = "CJY_Concrete-Rectangular-Column"
+                symbol_name = f"{int(width_mm)}x{int(depth_mm)}mm"
+
+            width_r   = round(width_mm, 1)
+            depth_r   = round(depth_mm, 1)
+            material  = col.get("material", "Concrete")
+
             column_params.append({
                 "id":          col.get("id"),
                 "type_mark":   col.get("type_mark"),
+                "Parameters": {
+                    "Family":   family_name,
+                    "Symbol":   symbol_name,
+                    "Location": {"X": cx_mm, "Y": cy_mm, "Z": 0.0},
+                    "Level":    "Level 0",
+                    "TopLevel": "Level 1",
+                },
+                "Properties": {
+                    "Width":    width_r,
+                    "Depth":    depth_r,
+                    "Material": material,
+                },
                 "family_type": family_suffix,
                 "location":    {"x": cx_mm, "y": cy_mm, "z": 0.0},
-                "width":       round(width_mm, 1),
-                "depth":       round(depth_mm, 1),
+                "width":       width_r,
+                "depth":       depth_r,
                 "height":      col.get("ceiling_height", self.default_wall_height),
                 "shape":       shape,
-                "material":    col.get("material", "Concrete"),
+                "material":    material,
                 "level":       "Level 0",
                 "top_level":   "Level 1",
             })
