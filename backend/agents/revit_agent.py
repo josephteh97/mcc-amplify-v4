@@ -33,6 +33,13 @@ from mcp.tools import TOOL_REGISTRY, call_tool
 _MODEL     = os.getenv("REVIT_AGENT_MODEL", "claude-sonnet-4-6")
 _MAX_TURNS = int(os.getenv("REVIT_AGENT_MAX_TURNS", "60"))
 
+# Per-job trace file location — one JSONL line per tool call.
+# Disable with REVIT_AGENT_TRACE_DIR="" in the env.
+_TRACE_DIR = os.getenv(
+    "REVIT_AGENT_TRACE_DIR",
+    str(Path(__file__).resolve().parents[2] / "data" / "traces"),
+)
+
 # ── System prompt ─────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """\
@@ -184,6 +191,10 @@ class RevitAgent:
         else:
             tx_str = transaction_json
 
+        trace = _TraceWriter(job_id)
+        trace.write({"event": "start", "job_id": job_id, "model": _MODEL,
+                     "transaction": _safe_json_loads(tx_str)})
+
         _emit(on_progress, "Revit agent starting — parsing geometry transaction…")
 
         initial_message = (
@@ -256,6 +267,11 @@ class RevitAgent:
                     if tool_name == "revit_export_session" and isinstance(result, dict):
                         rvt_path = result.get("rvt_path")
 
+                    trace.write({
+                        "event": "tool_call", "turn": turns,
+                        "tool": tool_name, "args": tool_args,
+                        "result": _summarise_result(tool_name, result),
+                    })
                     tool_results.append({
                         "type":        "tool_result",
                         "tool_use_id": block.id,
@@ -264,6 +280,11 @@ class RevitAgent:
 
                 except Exception as exc:
                     logger.error(f"[RevitAgent] Tool {tool_name!r} failed: {exc}")
+                    trace.write({
+                        "event": "tool_error", "turn": turns,
+                        "tool": tool_name, "args": tool_args,
+                        "error": str(exc),
+                    })
                     tool_results.append({
                         "type":        "tool_result",
                         "tool_use_id": block.id,
@@ -282,13 +303,16 @@ class RevitAgent:
             logger.warning(f"[RevitAgent] MAX_TURNS ({_MAX_TURNS}) reached without export.")
 
         success = rvt_path is not None
-        return {
+        result_summary = {
             "status":        "done" if success else "failed",
             "rvt_path":      rvt_path,
             "placed_count":  placed_count,
             "turns":         turns,
             "error":         None if success else "Agent did not export the model.",
         }
+        trace.write({"event": "end", **result_summary})
+        trace.close()
+        return result_summary
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -334,6 +358,85 @@ def _summarise_args(args: dict) -> str:
         else:
             parts.append(f"{k}={v!r}")
     return ", ".join(parts[:4])  # cap at 4 args for readability
+
+
+def _safe_json_loads(s: str):
+    try:
+        return json.loads(s)
+    except Exception:
+        return s
+
+
+def _summarise_result(tool_name: str, result: Any) -> Any:
+    """Reduce tool results to the fields that matter for diagnosis.
+
+    Full results go into the tool_result blocks Claude sees; the trace file
+    keeps only the decision-relevant slice so W-shape fallback is grep-able.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    if tool_name == "search_family_library":
+        return {
+            "total":  result.get("total"),
+            "source": result.get("source"),
+            "not_found": result.get("not_found", False),
+            "families": [
+                {"family_name": f.get("family_name"),
+                 "category":    f.get("category"),
+                 "types":       [t.get("type_name") for t in (f.get("types") or [])][:6]}
+                for f in (result.get("families") or [])[:5]
+            ],
+        }
+    if tool_name == "revit_place_instance":
+        return {"element_id": result.get("element_id"),
+                "placed":     result.get("placed")}
+    if tool_name == "revit_load_family":
+        return {"family_name":    result.get("family_name"),
+                "already_loaded": result.get("already_loaded"),
+                "type_count":     len(result.get("types") or [])}
+    if tool_name == "revit_export_session":
+        return {"rvt_path": result.get("rvt_path")}
+    # Default: keep keys but drop element arrays that blow up the trace.
+    return {k: v for k, v in result.items()
+            if k not in ("placed_elements", "elements", "parameters")}
+
+
+class _TraceWriter:
+    """Append-only JSONL trace of an agent run.
+
+    One file per job at {_TRACE_DIR}/{job_id}.jsonl. No-op if _TRACE_DIR is
+    empty (disabled) or the directory can't be created.
+    """
+
+    def __init__(self, job_id: str):
+        self._fh = None
+        if not _TRACE_DIR:
+            return
+        try:
+            trace_dir = Path(_TRACE_DIR)
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            # Overwrite any prior trace for this job — runs are expected to be re-run.
+            self._fh = open(trace_dir / f"{job_id}.jsonl", "w", encoding="utf-8")
+        except Exception as exc:
+            logger.warning(f"[RevitAgent] Trace disabled — cannot open file: {exc}")
+
+    def write(self, event: dict) -> None:
+        if self._fh is None:
+            return
+        try:
+            self._fh.write(json.dumps(event, default=str) + "\n")
+            self._fh.flush()
+        except Exception:
+            pass  # Trace must never break the run.
+
+    def close(self) -> None:
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
 
 
 def _load_api_key_from_file() -> str | None:

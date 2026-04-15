@@ -107,6 +107,11 @@ async def search_family_library(
         if families:
             # Rank by relevance before returning
             families = _score_and_rank(families, category=category, keyword=keyword)
+            top = ", ".join(f.get("family_name", "?") for f in families[:3])
+            logger.info(
+                f"[search_family_library] cat={category!r} kw={keyword!r} "
+                f"→ {len(families)} hits, top: {top}"
+            )
             return {
                 "total":      len(families),
                 "indexed_at": index.get("indexed_at"),
@@ -129,6 +134,11 @@ async def search_family_library(
     if all_rfa:
         matched = _match_rfa_by_name(all_rfa, category, keyword)
         if matched:
+            top = ", ".join(m.get("family_name", "?") for m in matched[:3])
+            logger.info(
+                f"[search_family_library] fallback folder hit → "
+                f"{len(matched)} matches, top: {top}"
+            )
             return {
                 "total":    len(matched),
                 "families": matched,
