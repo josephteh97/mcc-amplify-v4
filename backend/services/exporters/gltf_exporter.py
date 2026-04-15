@@ -68,6 +68,11 @@ class GltfExporter:
             plane.visual.face_colors = [180, 180, 180, 255]
             scene.add_geometry(plane)
 
+        # BIM uses Z-up; glTF uses Y-up. Rotate the whole scene −90° about X
+        # so columns extrude upward in viewers instead of toward the camera.
+        z_up_to_y_up = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])
+        scene.apply_transform(z_up_to_y_up)
+
         scene.export(output_path)
         logger.info(
             f"glTF export complete — walls:{len(geometry_data.get('walls', []))} "
