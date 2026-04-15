@@ -1,71 +1,125 @@
 {
   "version": 2,
-  "indexed_at": "2026-02-27T15:56:55.383114+00:00",
-  "library_root": "/home/jiezhi/Documents/mcc-amplify-ai/data/family_library",
+  "indexed_at": "2026-04-15T08:40:19.013511+00:00",
+  "library_root": "/home/jiezhi/Documents/mcc-amplify-v4/data/family_library",
   "total": 6,
   "families": [
     {
-      "path": "doors/M_Single-Flush.json",
+      "path": "structural_columns/CJY_Concrete-Rectangular-Column.json",
+      "windows_rfa_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\CJY_Concrete-Rectangular-Column.rfa",
       "rfa_local": false,
-      "family_name": "M_Single-Flush",
-      "category": "OST_Doors",
-      "placement": "hosted",
+      "family_name": "CJY_Concrete-Rectangular-Column",
+      "category": "OST_StructuralColumns",
+      "placement": "column",
       "shape": "rectangular",
-      "material": "general",
+      "material": "concrete",
       "tags": [
-        "door",
-        "single",
-        "flush",
-        "swing"
+        "column",
+        "structural",
+        "concrete",
+        "rectangular",
+        "square",
+        "200x200",
+        "200x250",
+        "200x300",
+        "300x300",
+        "300x450",
+        "450x600",
+        "600x750",
+        "300x800",
+        "800x300",
+        "800x800",
+        "1200x1200"
       ],
       "types": [
         {
-          "type_name": "750×2000mm",
-          "width_mm": 750,
-          "height_mm": 2000
+          "type_name": "200x200mm",
+          "width_mm": 200,
+          "depth_mm": 200
         },
         {
-          "type_name": "800×2000mm",
+          "type_name": "200x250mm",
+          "width_mm": 200,
+          "depth_mm": 250
+        },
+        {
+          "type_name": "200x300mm",
+          "width_mm": 200,
+          "depth_mm": 300
+        },
+        {
+          "type_name": "300x300mm",
+          "width_mm": 300,
+          "depth_mm": 300
+        },
+        {
+          "type_name": "300x450mm",
+          "width_mm": 300,
+          "depth_mm": 450
+        },
+        {
+          "type_name": "450x600mm",
+          "width_mm": 450,
+          "depth_mm": 600
+        },
+        {
+          "type_name": "600x750mm",
+          "width_mm": 600,
+          "depth_mm": 750
+        },
+        {
+          "type_name": "800x300mm",
+          "width_mm": 300,
+          "depth_mm": 800
+        },
+        {
+          "type_name": "800x800mm",
           "width_mm": 800,
-          "height_mm": 2000
+          "depth_mm": 800
         },
         {
-          "type_name": "850×2000mm",
-          "width_mm": 850,
-          "height_mm": 2000
-        },
-        {
-          "type_name": "900×2000mm",
-          "width_mm": 900,
-          "height_mm": 2000
-        },
-        {
-          "type_name": "900×2100mm",
-          "width_mm": 900,
-          "height_mm": 2100
-        },
-        {
-          "type_name": "1000×2100mm",
-          "width_mm": 1000,
-          "height_mm": 2100
-        },
-        {
-          "type_name": "1200×2100mm",
+          "type_name": "1200x1200mm",
           "width_mm": 1200,
-          "height_mm": 2100
+          "depth_mm": 1200
         }
       ],
       "sidecar": true,
-      "description": "Standard single-leaf flush door. Parameters: Width (mm), Height (mm).",
-      "parameter_map": {
-        "width_mm": "Width",
-        "height_mm": "Height"
-      },
-      "windows_rfa_search_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\US Metric\\Doors\\M_Single-Flush.rfa",
-      "notes": "Default door for most residential/commercial openings. Requires host wall."
+      "notes": "Used for ALL square and rectangular concrete columns. Square columns use equal WxD types (e.g. 300x300mm)."
+    },
+    {
+      "path": "structural_columns/CJY_RC-Round-Column.json",
+      "windows_rfa_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\CJY_RC Round Column.rfa",
+      "rfa_local": false,
+      "family_name": "CJY_RC Round Column",
+      "category": "OST_StructuralColumns",
+      "placement": "column",
+      "shape": "circular",
+      "material": "concrete",
+      "tags": [
+        "column",
+        "structural",
+        "concrete",
+        "circular",
+        "round"
+      ],
+      "types": [
+        {
+          "type_name": "Φ300",
+          "is_circular": true,
+          "diameter_mm": 300
+        },
+        {
+          "type_name": "300x300mm",
+          "is_circular": true,
+          "diameter_mm": 300
+        }
+      ],
+      "sidecar": true,
+      "notes": "Used for circular (round) concrete columns. Type Φ{n} or {n}x{n}mm."
     },
     {
       "path": "structural_columns/M_Concrete-Rectangular-Column.json",
+      "windows_rfa_path": "",
       "rfa_local": false,
       "family_name": "M_Concrete-Rectangular-Column",
       "category": "StructuralColumns",
@@ -136,6 +190,7 @@
     },
     {
       "path": "structural_columns/M_Concrete-Round-Column.json",
+      "windows_rfa_path": "",
       "rfa_local": false,
       "family_name": "M_Concrete-Round-Column",
       "category": "StructuralColumns",
@@ -206,6 +261,7 @@
     },
     {
       "path": "structural_columns/M_Steel-UC-Column.json",
+      "windows_rfa_path": "",
       "rfa_local": false,
       "family_name": "UB-Universal Beams-Column",
       "category": "StructuralColumns",
@@ -215,7 +271,7 @@
       "tags": [
         "column",
         "steel",
-        "UC",
+        "UB",
         "universal",
         "structural"
       ],
@@ -306,15 +362,22 @@
         }
       ],
       "sidecar": true,
-      "description": "Universal Column (UC) steel section for structural steel frames. Type parameters: bf (flange width mm), d (depth mm), tf (flange thickness mm), tw (web thickness mm).",
+      "description": "Universal Beams (UB) steel section for structural steel frames. Type parameters: bf (flange width mm), d (depth mm), tf (flange thickness mm), tw (web thickness mm).",
       "parameter_map": {
         "width_mm": "bf",
-        "depth_mm": "d"
+        "depth_mm": "d",
+        "flange_thickness_mm": "f",
+        "web_thickness_mm": "wt",
+        "web_fillet_mm": "wf",
+        "centroid_horizontal_mm": "width/2",
+        "centroid_vertical_mm": "Height/2",
+        "witdth, height, flange thickness, web thickness, centroid horizontal, centroid vertical": "nill"
       },
       "notes": "Use when drawing type-mark annotation matches UC pattern (e.g. C3=UC305x305x158). If only width×depth is annotated, pick by closest size."
     },
     {
       "path": "structural_framing/M_Concrete-Rectangular-Beam.json",
+      "windows_rfa_path": "",
       "rfa_local": false,
       "family_name": "M_Concrete-Rectangular-Beam",
       "category": "StructuralFraming",
@@ -367,66 +430,6 @@
         "depth_mm": "h"
       },
       "windows_rfa_search_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\US Metric\\Structural\\Framing\\Concrete\\M_Concrete-Rectangular Beam.rfa"
-    },
-    {
-      "path": "windows/M_Fixed.json",
-      "rfa_local": false,
-      "family_name": "M_Fixed",
-      "category": "OST_Windows",
-      "placement": "hosted",
-      "shape": "rectangular",
-      "material": "general",
-      "tags": [
-        "window",
-        "fixed",
-        "glazing"
-      ],
-      "types": [
-        {
-          "type_name": "600×900mm",
-          "width_mm": 600,
-          "height_mm": 900
-        },
-        {
-          "type_name": "900×900mm",
-          "width_mm": 900,
-          "height_mm": 900
-        },
-        {
-          "type_name": "900×1200mm",
-          "width_mm": 900,
-          "height_mm": 1200
-        },
-        {
-          "type_name": "1200×1200mm",
-          "width_mm": 1200,
-          "height_mm": 1200
-        },
-        {
-          "type_name": "1500×1200mm",
-          "width_mm": 1500,
-          "height_mm": 1200
-        },
-        {
-          "type_name": "1800×1500mm",
-          "width_mm": 1800,
-          "height_mm": 1500
-        },
-        {
-          "type_name": "2400×1500mm",
-          "width_mm": 2400,
-          "height_mm": 1500
-        }
-      ],
-      "sidecar": true,
-      "description": "Standard fixed (non-operable) window. Parameters: Width (mm), Height (mm), Sill Height (mm).",
-      "parameter_map": {
-        "width_mm": "Width",
-        "height_mm": "Height",
-        "sill_height_mm": "Sill Height"
-      },
-      "windows_rfa_search_path": "C:\\ProgramData\\Autodesk\\RVT 2023\\Libraries\\US Metric\\Windows\\M_Fixed.rfa",
-      "notes": "Default sill height is 900mm (applied via project profile). Requires host wall."
     }
   ]
 }
