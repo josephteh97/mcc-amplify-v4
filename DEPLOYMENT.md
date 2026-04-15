@@ -202,6 +202,10 @@ dotnet build
  Copy-Item bin\Debug\net48\RevitModelBuilderAddin.dll -Destination "C:\ProgramData\Autodesk\Revit\Addins\2023\" -Force
 ```
 
+```powershell
+dotnet build revit_server\csharp_service\RevitService.csproj -c Release
+```
+
 A successful build produces:
 - `bin\Debug\net48\RevitModelBuilderAddin.dll`
 
