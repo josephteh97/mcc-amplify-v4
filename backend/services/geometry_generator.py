@@ -92,47 +92,83 @@ def normalize_column_dimensions(
     column_shape: str = "rectangular",
     annotated_dimensions: Optional[Tuple[float, float]] = None,
 ) -> Tuple[float, float, str]:
-    """Normalize column dimensions based on shape and annotation availability.
-
-    Priority:
-      1. annotated_dimensions (from PDF text) — trusted directly; dimensions within
-         SQUARE_ANNOTATION_TOLERANCE_MM of each other are treated as square.
-      2. column_shape == "circular"  → snap to STANDARD_CIRCULAR_COLUMN_DIAMETERS.
-      3. column_shape == "square" or aspect ratio within SQUARE_ASPECT_THRESHOLD
-         → snap to STANDARD_SQUARE_COLUMN_SIZES; suffix is RECT{n}x{n}.
-      4. Rectangular fallback → round to RECTANGULAR_ROUNDING_INCREMENT_MM to
-         eliminate YOLO noise while preserving actual non-standard dimensions.
+    """Normalize column dimensions with shape-specific validation.
 
     Returns:
-        (width_mm, depth_mm, family_suffix) where family_suffix is a stable
-        string for Revit family naming: "RECT300x300", "RECT250x600", "CIRC500".
+        (width_mm, depth_mm, family_suffix)
     """
-    print(f"[NORM] w={width_mm:.0f} d={depth_mm:.0f} shape={column_shape} ann={annotated_dimensions}")
-    # Priority 1: trust annotated dimensions read from PDF text
+    # print(f"[NORM] w={width_mm:.0f} d={depth_mm:.0f} shape={column_shape} ann={annotated_dimensions}")
+
+    # ── Shape-specific validation of annotations ─────────────────────────────
+    if annotated_dimensions is not None:
+        ann_w, ann_d = annotated_dimensions
+
+        if column_shape == "circular":
+            diameter = max(ann_w, ann_d)
+            nearest = _nearest(diameter, STANDARD_CIRCULAR_COLUMN_DIAMETERS)
+            annotated_dimensions = (float(nearest), float(nearest))
+            print(f"  [CIRCULAR] diameter={diameter} → snapped to {nearest}")
+
+        elif column_shape == "square":
+            if ann_w != ann_d:
+                avg = (ann_w + ann_d) / 2
+                nearest = _nearest(avg, STANDARD_SQUARE_COLUMN_SIZES)
+                annotated_dimensions = (float(nearest), float(nearest))
+                print(f"  [SQUARE] {ann_w}x{ann_d} mismatch → corrected to {nearest}x{nearest}")
+            else:
+                nearest = _nearest(ann_w, STANDARD_SQUARE_COLUMN_SIZES)
+                annotated_dimensions = (float(nearest), float(nearest))
+
+        elif column_shape == "rectangular":
+            diff = abs(ann_w - ann_d)
+            if diff == 0:
+                nearest = _nearest(ann_w, STANDARD_SQUARE_COLUMN_SIZES)
+                annotated_dimensions = (float(nearest), float(nearest))
+                print(f"  [RECT→SQUARE] {ann_w}x{ann_d} → {nearest}x{nearest}")
+            elif diff <= 100:
+                avg = (ann_w + ann_d) / 2
+                nearest = _nearest(avg, STANDARD_SQUARE_COLUMN_SIZES)
+                annotated_dimensions = (float(nearest), float(nearest))
+                print(f"  [RECT→SQUARE] {ann_w}x{ann_d} diff={diff}mm → {nearest}x{nearest}")
+            else:
+                w_rounded = round(ann_w / 50) * 50
+                d_rounded = round(ann_d / 50) * 50
+                annotated_dimensions = (float(w_rounded), float(d_rounded))
+                print(f"  [RECTANGULAR] {ann_w}x{ann_d} → {w_rounded}x{d_rounded}")
+
+    # Priority 1: validated annotated dimensions
     if annotated_dimensions is not None:
         ann_w, ann_d = annotated_dimensions
         if ann_w > 0 and ann_d > 0:
-            if abs(ann_w - ann_d) < SQUARE_ANNOTATION_TOLERANCE_MM:
+            if abs(ann_w - ann_d) < 10:
                 size = max(ann_w, ann_d)
-                return float(size), float(size), f"RECT{int(size)}x{int(size)}"
-            return float(ann_w), float(ann_d), f"RECT{int(min(ann_w, ann_d))}x{int(max(ann_w, ann_d))}"
+                return float(size), float(size), f"RECT{int(size)}x{int(size)}mm"
+            return float(ann_w), float(ann_d), f"RECT{int(min(ann_w, ann_d))}x{int(max(ann_w, ann_d))}mm"
 
-    # Priority 2: circular sections → snap to standard diameters
+    # Priority 2: circular
     if column_shape == "circular":
-        return _normalize_circular_column(width_mm)
+        diameter = max(width_mm, depth_mm)
+        nearest = _nearest(diameter, STANDARD_CIRCULAR_COLUMN_DIAMETERS)
+        return float(nearest), float(nearest), f"CIRC{int(nearest)}"
 
-    # Priority 3: square (explicit label or aspect ratio).
-    # Use symmetric aspect = min/max so the threshold applies identically
-    # whether width or depth is the larger dimension.
+    # Priority 3: square by aspect ratio
     if width_mm > 0 and depth_mm > 0:
         aspect = min(width_mm, depth_mm) / max(width_mm, depth_mm)
     else:
         aspect = 1.0
     if column_shape == "square" or (1.0 - aspect) <= SQUARE_ASPECT_THRESHOLD:
-        return _normalize_square_column(width_mm, depth_mm)
+        avg = (width_mm + depth_mm) / 2
+        nearest = _nearest(avg, STANDARD_SQUARE_COLUMN_SIZES)
+        return float(nearest), float(nearest), f"RECT{int(nearest)}x{int(nearest)}mm"
 
-    # Priority 4: rectangular — preserve actual dimensions, just remove noise
-    return _normalize_rectangular_column(width_mm, depth_mm)
+    # Priority 4: rectangular — round to nearest 50 mm
+    w_rounded = round(width_mm / 50) * 50
+    d_rounded = round(depth_mm / 50) * 50
+    return (
+        float(w_rounded),
+        float(d_rounded),
+        f"RECT{int(min(w_rounded, d_rounded))}x{int(max(w_rounded, d_rounded))}mm",
+    )
 
 
 class GeometryGenerator:
