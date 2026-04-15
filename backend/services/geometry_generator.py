@@ -33,17 +33,21 @@ DEFAULT_STOREY_HEIGHT_MM = 3000
 # Used as snap targets when no PDF annotation is found for square sections —
 # structural engineers specify these standard sizes, so snapping eliminates
 # family proliferation caused by YOLO bbox jitter (e.g. 298 → 300 mm).
-STANDARD_SQUARE_COLUMN_SIZES = [200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000]
+STANDARD_SQUARE_COLUMN_SIZES = [200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000, 1200]
 
 # Standard CIRCULAR column diameters (mm).
 STANDARD_CIRCULAR_COLUMN_DIAMETERS = [300, 350, 400, 450, 500, 600, 700, 800, 900, 1000, 1200]
+
+# Default column size when no annotation is found.
+DEFAULT_COLUMN_SIZE_MM = 800
 
 # Rectangular columns are rounded to this increment to remove YOLO noise
 # while preserving actual non-standard dimensions (e.g. 447 → 450 mm).
 RECTANGULAR_ROUNDING_INCREMENT_MM = 10
 
 # Columns with aspect ratio within this fractional threshold are treated as square.
-SQUARE_ASPECT_THRESHOLD = 0.05  # 5%
+# 20% absorbs YOLO bbox noise (e.g. 720×880 reported for a true 800×800).
+SQUARE_ASPECT_THRESHOLD = 0.20  # 20%
 
 # Annotated dimensions within this absolute mm difference are treated as a square
 # section (covers sub-mm rounding in PDF text extraction, e.g. "300×300" read as 300/300).
@@ -103,6 +107,7 @@ def normalize_column_dimensions(
         (width_mm, depth_mm, family_suffix) where family_suffix is a stable
         string for Revit family naming: "RECT300x300", "RECT250x600", "CIRC500".
     """
+    print(f"[NORM] w={width_mm:.0f} d={depth_mm:.0f} shape={column_shape} ann={annotated_dimensions}")
     # Priority 1: trust annotated dimensions read from PDF text
     if annotated_dimensions is not None:
         ann_w, ann_d = annotated_dimensions
@@ -116,9 +121,14 @@ def normalize_column_dimensions(
     if column_shape == "circular":
         return _normalize_circular_column(width_mm)
 
-    # Priority 3: square (explicit label or aspect ratio)
-    aspect = width_mm / depth_mm if depth_mm > 0 else 1.0
-    if column_shape == "square" or abs(1.0 - aspect) <= SQUARE_ASPECT_THRESHOLD:
+    # Priority 3: square (explicit label or aspect ratio).
+    # Use symmetric aspect = min/max so the threshold applies identically
+    # whether width or depth is the larger dimension.
+    if width_mm > 0 and depth_mm > 0:
+        aspect = min(width_mm, depth_mm) / max(width_mm, depth_mm)
+    else:
+        aspect = 1.0
+    if column_shape == "square" or (1.0 - aspect) <= SQUARE_ASPECT_THRESHOLD:
         return _normalize_square_column(width_mm, depth_mm)
 
     # Priority 4: rectangular — preserve actual dimensions, just remove noise
@@ -142,7 +152,7 @@ class GeometryGenerator:
         # Minimum structural column section (mm). 200 mm is the Revit extrusion floor.
         # Stored as an instance attribute so apply_profile() can raise it per-job
         # without mutating the class and affecting other GeometryGenerator instances.
-        self._min_column_mm           = 200.0
+        self._min_column_mm           = 800.0
 
     def apply_profile(self, profile: dict) -> None:
         """
@@ -521,14 +531,15 @@ class GeometryGenerator:
                 annotated_dimensions=annotated_dims,
             )
 
-            # Symbol must match an existing family type name verbatim (Newtonsoft
-            # case-insensitive) so C# reuses the type instead of duplicating it.
+            # Symbol uses the family's max×min mm convention (e.g. "800x300mm")
+            # so C# finds the existing type instead of falling back to duplication.
             if shape == "circular":
                 family_name = "CJY_RC Round Column"
                 symbol_name = f"Φ{int(width_mm)}"
             else:
                 family_name = "CJY_Concrete-Rectangular-Column"
-                symbol_name = f"{int(width_mm)}x{int(depth_mm)}mm"
+                big, small = max(width_mm, depth_mm), min(width_mm, depth_mm)
+                symbol_name = f"{int(big)}x{int(small)}mm"
 
             width_r   = round(width_mm, 1)
             depth_r   = round(depth_mm, 1)

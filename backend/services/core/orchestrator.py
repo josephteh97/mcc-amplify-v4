@@ -42,6 +42,17 @@ _RE_CIRC = re.compile(
 # e.g. "C1", "C20", "B3", "K14" — covers non-standard naming conventions
 _RE_MARK = re.compile(r'\b([A-Z]{1,3}\d{1,3})\b')
 
+# Beam / slab / lintel prefixes that must NOT be accepted as column marks.
+# Without this filter the column annotator happily scrapes "RCB2 800×300"
+# from a nearby beam schedule and applies it to an actual column.
+_BEAM_MARK_PREFIX = re.compile(r'^(RCB|GB|SB|TB|FB|RB|SL|LB|L|B)\d', re.IGNORECASE)
+
+
+def _is_beam_label(txt: str) -> bool:
+    """True when *txt* carries a mark that identifies a beam/slab, not a column."""
+    m = _RE_MARK.search(txt)
+    return bool(m and _BEAM_MARK_PREFIX.match(m.group(1)))
+
 # ── Dual-track infrastructure ──────────────────────────────────────────────────
 from backend.services.security.secure_renderer import SecurePDFRenderer, ResourceMonitor
 from backend.services.pdf_processing.processors import VectorProcessor, StreamingProcessor
@@ -762,7 +773,7 @@ class PipelineOrchestrator:
             type (e.g. all are RCB1 800×800) but individual annotations were
             missing or missed.
         """
-        _SAFE_DEFAULT_MM = 200.0   # fallback when all annotation passes fail
+        _SAFE_DEFAULT_MM = 800.0   # fallback when all annotation passes fail
 
         text_items = vector_data.get("text", [])
         page_rect  = vector_data.get("page_rect", [0, 0, 595, 842])
@@ -790,6 +801,8 @@ class PipelineOrchestrator:
             if not mark_m:
                 continue
             mark = mark_m.group(1)
+            if _BEAM_MARK_PREFIX.match(mark):
+                continue
             rect_m = _RE_RECT.search(txt)
             circ_m = _RE_CIRC.search(txt)
             if rect_m and mark not in schedule:
@@ -807,6 +820,8 @@ class PipelineOrchestrator:
             if not mark_m:
                 continue
             mark   = mark_m.group(1)
+            if _BEAM_MARK_PREFIX.match(mark):
+                continue
             rect_m = _RE_RECT.search(txt)
             circ_m = _RE_CIRC.search(txt)
             if rect_m and mark not in schedule:
@@ -889,6 +904,8 @@ class PipelineOrchestrator:
 
             # (a) Proximity — text item contains both mark and dimensions
             for _, txt in nearby:
+                if _is_beam_label(txt):
+                    continue
                 rect_m = _RE_RECT.search(txt)
                 if rect_m:
                     mark = _RE_MARK.search(txt)
@@ -912,9 +929,13 @@ class PipelineOrchestrator:
 
             # (b) Proximity — nearby text has only a type mark → look up schedule
             for _, txt in nearby:
+                if _is_beam_label(txt):
+                    continue
                 mark_m = _RE_MARK.search(txt)
                 if mark_m:
                     mark = mark_m.group(1)
+                    if _BEAM_MARK_PREFIX.match(mark):
+                        continue
                     if mark in schedule:
                         w, d, is_circ = schedule[mark]
                         _apply(col, w, d, is_circ, mark)

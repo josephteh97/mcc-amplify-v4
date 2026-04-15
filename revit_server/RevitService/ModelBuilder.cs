@@ -332,22 +332,21 @@ namespace RevitService
 
             foreach (var colCmd in columns)
             {
-                string? familyName = colCmd.Parameters?.Family;
-                string? symbolName = colCmd.Parameters?.Symbol;
-
-                // Resolve template: exact (family, symbol) if present, otherwise
-                // any active symbol in the family. Only skip when the family
-                // itself is missing — don't lose the column just because the
-                // requested type name doesn't yet exist.
+                // Prefer the exact Family+Symbol from Python, but fall back to any
+                // symbol in the requested family when the symbol name doesn't match
+                // the family's stored type convention (e.g. Python "300x800mm" vs
+                // Revit "800x300mm"). Dimensions are authoritatively set later from
+                // Properties.Width/Depth, so using a different symbol as template
+                // produces the correct geometry.
                 FamilySymbol? templateSymbol =
-                    GetFamilySymbol(familyName, symbolName)
-                    ?? GetAnyFamilySymbol(familyName);
+                    GetFamilySymbol(colCmd.Parameters?.Family, colCmd.Parameters?.Symbol)
+                    ?? GetAnySymbolInFamily(colCmd.Parameters?.Family);
                 if (templateSymbol == null) continue;
 
                 double widthMm = colCmd.Properties?.Width ?? 300.0;
                 double depthMm = colCmd.Properties?.Depth ?? 300.0;
                 FamilySymbol? colSymbol = GetOrCreateSizedColumnType(
-                    templateSymbol, symbolName, widthMm, depthMm);
+                    templateSymbol, widthMm, depthMm);
                 if (colSymbol == null) continue;
 
                 Level? baseLevel = LevelByName(colCmd.Parameters?.Level ?? "Level 0");
@@ -391,8 +390,7 @@ namespace RevitService
         /// caller skips the column rather than placing it at the wrong size.
         /// </summary>
         private FamilySymbol? GetOrCreateSizedColumnType(
-            FamilySymbol template, string? requestedSymbol,
-            double widthMm, double depthMm)
+            FamilySymbol template, double widthMm, double depthMm)
         {
             bool isSquare = Math.Abs(widthMm - depthMm) < 1.0;
             if (isSquare)
@@ -402,13 +400,9 @@ namespace RevitService
                 depthMm = size;
             }
 
-            // Prefer the exact Symbol name from the transaction so the resulting
-            // Revit type reads as "800x800mm" rather than a synthetic "SQ800".
-            string typeName = !string.IsNullOrWhiteSpace(requestedSymbol)
-                ? requestedSymbol!
-                : (isSquare
-                    ? $"{(int)Math.Round(widthMm)}x{(int)Math.Round(widthMm)}mm"
-                    : $"{(int)Math.Round(widthMm)}x{(int)Math.Round(depthMm)}mm");
+            string typeName = isSquare
+                ? $"SQ{(int)Math.Round(widthMm)}"
+                : $"RECT{(int)Math.Round(Math.Min(widthMm, depthMm))}x{(int)Math.Round(Math.Max(widthMm, depthMm))}";
 
             string familyName = template.Family?.Name ?? string.Empty;
             string cacheKey = $"{familyName}|{typeName}";
@@ -427,16 +421,6 @@ namespace RevitService
             if (!sized.IsActive) sized.Activate();
             _columnTypeCache[cacheKey] = sized;
             return sized;
-        }
-
-        private FamilySymbol? GetAnyFamilySymbol(string? familyName)
-        {
-            if (string.IsNullOrEmpty(familyName)) return null;
-            return new FilteredElementCollector(doc)
-                .OfClass(typeof(FamilySymbol))
-                .Cast<FamilySymbol>()
-                .FirstOrDefault(x =>
-                    x.Family?.Name.Equals(familyName, StringComparison.OrdinalIgnoreCase) == true);
         }
 
         private static bool SetTypeLengthParameter(
@@ -590,6 +574,16 @@ namespace RevitService
                 .FirstOrDefault(x =>
                     x.Family?.Name.Equals(familyName, StringComparison.OrdinalIgnoreCase) == true
                     && x.Name.Equals(symbolName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private FamilySymbol? GetAnySymbolInFamily(string? familyName)
+        {
+            if (string.IsNullOrEmpty(familyName)) return null;
+            return new FilteredElementCollector(doc)
+                .OfClass(typeof(FamilySymbol))
+                .Cast<FamilySymbol>()
+                .FirstOrDefault(x =>
+                    x.Family?.Name.Equals(familyName, StringComparison.OrdinalIgnoreCase) == true);
         }
 
         private void SetWallProperties(Wall wall, WallProperties? props)
