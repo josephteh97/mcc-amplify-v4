@@ -25,7 +25,7 @@ from backend.services.grid_detector import GridDetector
 
 
 # Default floor-to-floor height when no storey height annotation is present.
-DEFAULT_STOREY_HEIGHT_MM = 3000
+DEFAULT_STOREY_HEIGHT_MM = 5000              # actual case: refer to arch drawing
 
 # Standard SQUARE column section sizes (mm).
 # Used as snap targets when no PDF annotation is found for square sections —
