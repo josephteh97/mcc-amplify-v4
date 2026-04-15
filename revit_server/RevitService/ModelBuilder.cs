@@ -34,6 +34,11 @@ namespace RevitService
         // 1 mm = 1/304.8 ft  ≈  0.003280840 ft
         private const double MM_TO_FEET = 1.0 / 304.8;
 
+        // Cache of sized column types keyed by "<FamilyName>|<typeName>".
+        // Ensures each (width, depth) pair is only duplicated once per build.
+        private readonly Dictionary<string, FamilySymbol> _columnTypeCache =
+            new Dictionary<string, FamilySymbol>();
+
         // Template shipped with Revit 2023
         private const string TEMPLATE_PATH =
             @"C:\ProgramData\Autodesk\RVT 2023\Templates\Architectural Template.rte";
@@ -63,6 +68,7 @@ namespace RevitService
                         "Failed to deserialise transaction JSON.");
 
                 doc = revitApp.NewProjectDocument(TEMPLATE_PATH);
+                _columnTypeCache.Clear();  // stale FamilySymbols from prior docs
 
                 using (Transaction trans = new Transaction(doc, "Build Floor Plan Model"))
                 {
@@ -319,10 +325,20 @@ namespace RevitService
             if (columns == null) return;
             foreach (var colCmd in columns)
             {
-                FamilySymbol? colSymbol = GetFamilySymbol(
+                FamilySymbol? templateSymbol = GetFamilySymbol(
                     colCmd.Parameters?.Family,
                     colCmd.Parameters?.Symbol);
-                if (colSymbol == null) continue;
+                if (templateSymbol == null) continue;
+
+                // Honour width/depth from the transaction: duplicate the family
+                // type per unique (width, depth) pair so each column is the
+                // correct size.  Width/Depth are TYPE parameters in virtually
+                // all stock column families — setting them on the instance
+                // after placement is a silent no-op.
+                double widthMm = colCmd.Properties?.Width ?? 300.0;
+                double depthMm = colCmd.Properties?.Depth ?? 300.0;
+                FamilySymbol colSymbol = GetOrCreateSizedColumnType(
+                    templateSymbol, widthMm, depthMm);
                 if (!colSymbol.IsActive) colSymbol.Activate();
 
                 string baseLevelName = colCmd.Parameters?.Level ?? "Level 0";
@@ -359,6 +375,80 @@ namespace RevitService
                         colCmd.Parameters.Rotation * Math.PI / 180.0);
                 }
             }
+        }
+
+        /// <summary>
+        /// Returns a FamilySymbol of the same family as <paramref name="template"/>
+        /// whose dimensions match the requested width/depth (in mm).
+        /// If no such type exists, the template is duplicated and the new
+        /// type's b/h (Width/Depth) parameters are set accordingly.
+        /// For square columns (width == depth within 1 mm) both dimensions
+        /// are snapped to the same value so the geometry is truly square.
+        /// </summary>
+        private FamilySymbol GetOrCreateSizedColumnType(
+            FamilySymbol template, double widthMm, double depthMm)
+        {
+            // Snap square columns to exactly equal dimensions
+            bool isSquare = Math.Abs(widthMm - depthMm) < 1.0;
+            if (isSquare)
+            {
+                double size = Math.Max(widthMm, depthMm);
+                widthMm = size;
+                depthMm = size;
+            }
+
+            string typeName = isSquare
+                ? $"SQ{(int)Math.Round(widthMm)}"
+                : $"RECT{(int)Math.Round(Math.Min(widthMm, depthMm))}x{(int)Math.Round(Math.Max(widthMm, depthMm))}";
+
+            string cacheKey = $"{template.Family?.Name}|{typeName}";
+            if (_columnTypeCache.TryGetValue(cacheKey, out FamilySymbol? cached))
+                return cached;
+
+            // Reuse an existing type in the document with the same name
+            // (within the same family) if one is already present.
+            FamilySymbol? existing = new FilteredElementCollector(doc)
+                .OfClass(typeof(FamilySymbol))
+                .Cast<FamilySymbol>()
+                .FirstOrDefault(fs =>
+                    fs.Family?.Id == template.Family?.Id
+                    && fs.Name.Equals(typeName, StringComparison.OrdinalIgnoreCase));
+
+            if (existing != null)
+            {
+                _columnTypeCache[cacheKey] = existing;
+                return existing;
+            }
+
+            // Duplicate the template and set dimensions on the NEW type.
+            // Setting dimension params on an instance is a no-op when the
+            // family exposes them as type parameters (the common case).
+            FamilySymbol newType = template.Duplicate(typeName) as FamilySymbol ?? template;
+
+            double widthFt = widthMm * MM_TO_FEET;
+            double depthFt = depthMm * MM_TO_FEET;
+
+            // Stock structural column families use b/h; some use Width/Depth.
+            SetTypeLengthParameter(newType, new[] { "b", "Width", "B", "w" }, widthFt);
+            SetTypeLengthParameter(newType, new[] { "h", "Depth",  "H", "d" }, depthFt);
+
+            _columnTypeCache[cacheKey] = newType;
+            return newType;
+        }
+
+        private static bool SetTypeLengthParameter(
+            FamilySymbol symbol, string[] paramNames, double valueFt)
+        {
+            foreach (string name in paramNames)
+            {
+                Parameter? p = symbol.LookupParameter(name);
+                if (p != null && !p.IsReadOnly && p.StorageType == StorageType.Double)
+                {
+                    p.Set(valueFt);
+                    return true;
+                }
+            }
+            return false;
         }
 
         // ------------------------------------------------------------------
