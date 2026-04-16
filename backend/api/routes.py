@@ -20,7 +20,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from api.websocket import manager as ws_manager
-from core.pipeline import FloorPlanPipeline
+from pipeline import FloorPlanPipeline
 from services.corrections_logger import CorrectionsLogger
 from services.revit_client import RevitClient
 from utils.file_handler import save_upload_file
