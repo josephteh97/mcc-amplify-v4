@@ -176,7 +176,7 @@ class CorrectionsLogger:
 
     # ── YOLO training export ───────────────────────────────────────────────────
 
-    # Maps element_type strings to YOLO class IDs (must match yolov11_floorplan.pt)
+    # Maps element_type strings to YOLO class IDs (must match column-detect.pt)
     _YOLO_CLASS_IDS: dict[str, int] = {
         "walls":    0,
         "doors":    1,

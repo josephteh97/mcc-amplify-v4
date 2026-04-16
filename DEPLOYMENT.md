@@ -1,6 +1,6 @@
 # Deployment Guide
 
-Complete setup instructions for the MCC Amplify AI system.
+Complete setup instructions for the MCC Amplify v4 system.
 
 ---
 
@@ -13,9 +13,58 @@ The system requires **two machines on the same network**:
 | Ubuntu (Linux) | Main processing, web UI, AI pipeline | `./run.sh` |
 | Windows (10/11 Pro) | Revit BIM builder | Build + launch Revit Add-in |
 
-The Ubuntu machine does all the heavy lifting (PDF processing, AI analysis, geometry generation). The Windows machine runs Revit and the C# Add-in that converts the generated instructions into a native `.RVT` file.
+The Ubuntu machine does all the heavy lifting (PDF processing, AI analysis, intelligence middleware, geometry generation). The Windows machine runs Revit and the C# Add-in that converts the generated instructions into a native `.RVT` file.
 
 > **Startup order matters:** Start the Windows Revit Add-in **first**, then start the Ubuntu system.
+
+---
+
+## System Architecture
+
+```mermaid
+flowchart LR
+    subgraph UBUNTU["Ubuntu (Linux)"]
+        direction TB
+        FE["React + Three.js\nFrontend :5173"]
+        API["FastAPI Backend :8000"]
+        PIPE["Pipeline Orchestrator"]
+        INT["Intelligence Middleware\nType Resolver / Validator / DfMA"]
+        SEM["Semantic AI\nOllama / Gemini / Claude"]
+        GEO["Geometry Generator"]
+        BTE["BIM Translator Enricher"]
+        EXP["RVT Exporter + glTF Exporter"]
+
+        FE --> API --> PIPE
+        PIPE --> INT --> SEM --> GEO --> BTE --> EXP
+    end
+
+    subgraph WIN["Windows"]
+        REVIT["Revit 2023\nC# Add-in\nTcpListener :5000"]
+    end
+
+    EXP -->|"JSON transaction\nHTTP POST"| REVIT
+    REVIT -->|".rvt binary"| EXP
+```
+
+Both machines must be on the same local network (or VPN). The Ubuntu machine is the primary — it hosts the web UI, runs all AI processing, and drives the Windows Revit machine.
+
+---
+
+## Pipeline Flow
+
+```mermaid
+flowchart TD
+    PDF(["PDF Upload"]) --> SEC["Stage 1: Security Check\nSecurePDFRenderer"]
+    SEC --> VEC["Stage 2a: Vector Extraction\nVectorProcessor (PyMuPDF)"] & RAS["Stage 2b: Raster + YOLO\ncolumn-detect.pt\n1280px tiling, NMS"]
+    VEC & RAS --> FUS["Stage 3: Hybrid Fusion\nSnap YOLO to vector lines"]
+    FUS --> GRD["Stage 4: Grid Detection\nStructural grid → mm scale"]
+    GRD --> INT["Stage 4c: Intelligence Middleware\nType Resolver → Validator → DfMA"]
+    INT --> SEM["Stage 5: Semantic AI\nOllama / Gemini / Claude"]
+    SEM --> GEO["Stage 6: Geometry Generation\npx → world mm → Revit recipe"]
+    GEO --> BTE["Stage 6.5: BIM Enrichment\nAppend intelligence metadata"]
+    BTE --> RVT["Stage 7a: RVT Export\n→ Windows Revit"] & GLT["Stage 7b: glTF Export\n.glb with Z→Y-up"]
+    RVT & GLT --> DONE(["BIM model + 3D preview"])
+```
 
 ---
 
@@ -122,30 +171,37 @@ nano .env
 **Required settings:**
 
 ```bash
-# ── Chat Agent ─────────────────────────────────────────────────────────────────
+# -- Chat Agent ----------------------------------------------------------------
 # NVIDIA NIM is the default (free tier — 1000 credits on signup)
 # Get key at: https://build.nvidia.com  → "Get API Key"
 # Preferred: store key in backend/nvidia_key.txt (gitignored)
 CHAT_MODEL_BACKEND=nvidia_nim           # or: gemini_api
 
-# ── Semantic AI Backend (pipeline Stage 5) ─────────────────────────────────────
-# Choose one: gemini_api | anthropic_api
+# -- Semantic AI Backend (pipeline Stage 5) ------------------------------------
+# Choose one: gemini_api | anthropic_api | ollama
 SEMANTIC_MODEL_BACKEND=gemini_api
 # Preferred: store key in backend/google_key.txt (gitignored)
 # GOOGLE_API_KEY=your_gemini_key_here
 # ANTHROPIC_API_KEY=your_anthropic_key_here
 
-# ── Windows Revit Server ───────────────────────────────────────────────────────
+# -- Intelligence Middleware (Stage 4c) ----------------------------------------
+COLUMN_CONF_THRESHOLD=0.25      # YOLO confidence for column detection
+MAX_GRID_DIST_PX=80             # Max px distance from grid → "off_grid" flag
+ISOLATION_RADIUS_PX=200         # Neighbourhood consensus radius
+MIN_BAY_MM=3000                 # DfMA minimum bay spacing (SS CP 65)
+MAX_BAY_MM=12000                # DfMA maximum bay spacing (SS CP 65)
+
+# -- Windows Revit Server ------------------------------------------------------
 # The C# Add-in listens on TCP port 5000 (TcpListener — works cross-machine)
 WINDOWS_REVIT_SERVER=http://LT-HQ-277:5000
 REVIT_SERVER_API_KEY=choose_a_shared_secret
 
-# ── FastAPI ───────────────────────────────────────────────────────────────────
+# -- FastAPI -------------------------------------------------------------------
 APP_HOST=0.0.0.0
 APP_PORT=8000
 DEBUG=false
 
-# ── Upload Limits ─────────────────────────────────────────────────────────────
+# -- Upload Limits -------------------------------------------------------------
 MAX_UPLOAD_SIZE=52428800    # 50 MB
 ALLOWED_EXTENSIONS=pdf
 ```
@@ -169,7 +225,17 @@ mkdir -p data/uploads data/processed \
 chmod -R 755 data/ logs/
 ```
 
-### 1.8 Register Windows Hostname (first-time only)
+### 1.8 YOLO Weights
+
+Place the trained YOLO weights at:
+
+```
+backend/ml/weights/column-detect.pt
+```
+
+The pipeline can still run without YOLO (vector-only fallback), but detection quality will be reduced.
+
+### 1.9 Register Windows Hostname (first-time only)
 
 Find the Windows IP address (`ipconfig` on Windows), then on Ubuntu:
 
@@ -194,16 +260,6 @@ Open **PowerShell as Administrator** on the Windows machine:
 cd C:\path\to\mcc-amplify-ai\revit_server\RevitAddin
 dotnet clean
 dotnet build
-```
-
-```powershell
- dotnet build revit_server/RevitAddin/ -c Release
- cd .\revit_server\RevitAddin\
- Copy-Item bin\Debug\net48\RevitModelBuilderAddin.dll -Destination "C:\ProgramData\Autodesk\Revit\Addins\2023\" -Force
-```
-
-```powershell
-dotnet build revit_server\csharp_service\RevitService.csproj -c Release
 ```
 
 A successful build produces:
@@ -262,16 +318,16 @@ cd ~/mcc-amplify-ai
 
 Output:
 ```
-  ╔══════════════════════════════════════╗
-  ║       Amplify AI System              ║
-  ║   Floor Plan → 3D BIM (RVT + glTF)  ║
-  ╚══════════════════════════════════════╝
+  +======================================+
+  |       Amplify AI System              |
+  |   Floor Plan -> 3D BIM (RVT + glTF) |
+  +======================================+
 
-▶  Starting backend  →  http://localhost:8000
-⏳ Waiting for backend to be ready…
-▶  Starting frontend →  http://localhost:5173
+  Starting backend  ->  http://localhost:8000
+  Waiting for backend to be ready...
+  Starting frontend ->  http://localhost:5173
 
-  ✓ Amplify AI is running
+  Amplify AI is running
     Frontend:  http://localhost:5173
     Backend:   http://localhost:8000
     API docs:  http://localhost:8000/api/docs
@@ -284,35 +340,65 @@ Open `http://localhost:5173` in a browser.
 
 ## Part 4: Full End-to-End Workflow
 
-```
-[Windows]                           [Ubuntu]
-   │                                    │
-   │  1. Build RevitAddin (dotnet)      │
-   │  2. Copy .addin + .dll to Addins\  │
-   │  3. Launch Revit 2023              │
-   │  4. Add-in loads, TCP :5000 ready  │
-   │                                    │  5. Run ./run.sh
-   │                                    │  6. Open http://localhost:5173
-   │                                    │  7. Upload PDF floor plan
-   │                                    │  8. Pipeline runs:
-   │                                    │     ├─ Security check
-   │                                    │     ├─ Track A: Vector extraction
-   │                                    │     ├─ Track B: Raster render
-   │                                    │     ├─ YOLO detection
-   │                                    │     ├─ Fusion (vector snapping)
-   │                                    │     ├─ Grid detection (→ real-world scale)
-   │                                    │     ├─ AI semantic analysis (Gemini/Claude)
-   │                                    │     └─ 3D geometry parameters
-   │<── JSON transaction ───────────────│  9. Revit client POSTs to :5000/build-model
-   │  10. Add-in creates BIM elements   │
-   │  11. Returns .RVT binary ─────────>│  12. Save .RVT to data/models/rvt/
-   │                                    │  13. Export .glb to data/models/gltf/
-   │                                    │  14. Download links appear in UI
+```mermaid
+sequenceDiagram
+    participant User
+    participant Frontend as React Frontend<br/>:5173
+    participant Backend as FastAPI Backend<br/>:8000
+    participant Revit as Revit Add-in<br/>Windows :5000
+
+    User->>Frontend: Upload PDF floor plan
+    Frontend->>Backend: POST /api/process
+    Backend->>Backend: Stage 1: Security check
+    Backend->>Backend: Stage 2a: Vector extraction (PyMuPDF)
+    Backend->>Backend: Stage 2b: Raster render + YOLO (column-detect.pt)
+    Backend->>Backend: Stage 3: Hybrid fusion (snap to vector)
+    Backend->>Backend: Stage 4: Grid detection (px -> mm scale)
+    Backend->>Backend: Stage 4c: Intelligence middleware
+    Note right of Backend: Type Resolver -> Validator -> DfMA
+    Backend->>Backend: Stage 5: Semantic AI (Ollama/Gemini/Claude)
+    Backend->>Backend: Stage 6: Geometry generation
+    Backend->>Backend: Stage 6.5: BIM translator enrichment
+    Backend->>Revit: POST /build-model (JSON transaction)
+    Revit->>Revit: Create BIM elements via Revit API
+    Revit-->>Backend: .RVT binary response
+    Backend->>Backend: Stage 7b: Export .glb (glTF)
+    Backend-->>Frontend: Download links (.rvt + .glb)
+    Frontend-->>User: 3D preview + download
 ```
 
 ---
 
-## Part 5: Production Hardening (Optional)
+## Part 5: Intelligence Middleware Configuration
+
+The intelligence layer (Stage 4c) runs after grid detection and before semantic AI. It validates and classifies YOLO column detections without modifying their coordinates.
+
+### Components
+
+| Module | Purpose | Key output fields |
+|--------|---------|-------------------|
+| `type_resolver.py` | CV2 contour analysis on detection crops | `resolved_type` (circular/rectangular/L-shape), `type_confidence` |
+| `cross_element_validator.py` | Pairwise IoU overlap, grid distance, isolation checks | `validation_flags`, `is_valid` |
+| `validation_agent.py` | DfMA rule enforcement (SS CP 65), orphan detection | `dfma_violations`, `is_dfma_compliant`, `is_orphan` |
+| `bim_translator_enricher.py` | Appends metadata to Revit recipe (post-geometry) | Intelligence fields copied to recipe columns |
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COLUMN_CONF_THRESHOLD` | `0.25` | YOLO confidence threshold for column detection |
+| `MAX_GRID_DIST_PX` | `80` | Max pixel distance from nearest grid line before "off_grid" flag |
+| `ISOLATION_RADIUS_PX` | `200` | Radius in pixels for neighbourhood consensus check |
+| `MIN_BAY_MM` | `3000` | DfMA minimum bay spacing in mm (SS CP 65) |
+| `MAX_BAY_MM` | `12000` | DfMA maximum bay spacing in mm (SS CP 65) |
+
+### Safety constraint
+
+The intelligence middleware **never modifies** coordinate values (`center`, `bbox`, `x`, `y`, `z`). The column placement pipeline (YOLO bbox -> `_px_to_world()` -> `_snap_to_nearest_grid()` -> `{x,y,z}`) is a frozen subsystem.
+
+---
+
+## Part 6: Production Hardening (Optional)
 
 ### Run Backend as a systemd Service
 
@@ -392,7 +478,7 @@ cd ~/mcc-amplify-ai/frontend && npm run build
 
 ---
 
-## Part 6: Troubleshooting
+## Part 7: Troubleshooting
 
 ### Ubuntu cannot reach Windows (`curl` times out)
 
@@ -403,7 +489,7 @@ ping LT-HQ-277
 # Test port specifically
 nc -zv LT-HQ-277 5000
 
-# If ping works but port fails → Windows Firewall is blocking
+# If ping works but port fails -> Windows Firewall is blocking
 # Add the firewall rule (see Part 2.3)
 ```
 
@@ -418,7 +504,7 @@ netstat -ano | findstr :5000
 The system derives real-world scale exclusively from structural column grid lines and their dimension annotations (numbers printed between grid lines, e.g. "6000"). Scale text like "1:100" in the title block is intentionally ignored.
 
 If the grid is not detected:
-- The fallback is a uniform 5×4 grid at 6000 mm bays.
+- The fallback is a uniform 5x4 grid at 6000 mm bays.
 - Check the backend log for `Grid detected:` or `Grid detection failed` at Stage 4.
 - Floor plans without a visible structural grid (e.g. residential with no column annotations) will always fall back.
 
@@ -435,12 +521,16 @@ python -c "from backend.services.core.orchestrator import PipelineOrchestrator; 
   - `RevitModelBuilder.addin`
   - `RevitModelBuilderAddin.dll`
 - Check `C:\RevitOutput\addin_startup.log` — it is written by the Add-in on every Revit startup.
-- Open Revit → Add-ins tab → confirm the Add-in appears.
+- Open Revit -> Add-ins tab -> confirm the Add-in appears.
 - Run Revit as Administrator if there are permission errors.
 
 ### Revit is in a modal state
 
 Dialogs (Print, Options, Save As) block the Revit API. Close all dialogs and ensure the main Revit window is in focus before triggering a pipeline run.
+
+### YOLO weights not found
+
+Place the trained weights at `backend/ml/weights/column-detect.pt`. The pipeline continues without YOLO (vector-only fallback), but detection quality will be reduced.
 
 ### Old data cleanup
 
@@ -456,23 +546,53 @@ find ~/mcc-amplify-ai/data/models/ -type f -mtime +7 -delete
 
 ```
 App : IExternalApplication
-  └─ OnStartup()
-       ├─ Creates BuildHandler + ExternalEvent
-       └─ Starts TcpListener(IPAddress.Any, 5000) in background thread
+  +-- OnStartup()
+       |-- Creates BuildHandler + ExternalEvent
+       +-- Starts TcpListener(IPAddress.Any, 5000) in background thread
 
 ListenLoop (background Task)
-  └─ AcceptTcpClientAsync() → HandleClient()
-       ├─ GET  /health        → "Revit Model Builder ready"
-       └─ POST /build-model   → HandleBuildModel()
-            ├─ Deserialise JSON transaction (RevitTransaction schema)
-            ├─ BuildHandler.Prepare(json, outputPath)
-            ├─ ExternalEvent.Raise() → marshals to Revit main thread
-            ├─ Waits up to 120 s for ManualResetEventSlim
-            └─ Returns .rvt binary as HTTP response
+  +-- AcceptTcpClientAsync() -> HandleClient()
+       |-- GET  /health        -> "Revit Model Builder ready"
+       +-- POST /build-model   -> HandleBuildModel()
+            |-- Deserialise JSON transaction (RevitTransaction schema)
+            |-- BuildHandler.Prepare(json, outputPath)
+            |-- ExternalEvent.Raise() -> marshals to Revit main thread
+            |-- Waits up to 120 s for ManualResetEventSlim
+            +-- Returns .rvt binary as HTTP response
 
 ModelBuilder (runs on Revit main thread via ExternalEvent)
-  └─ FindTemplate() → prefers Default_M_*.rte (metric mm)
-  └─ Creates: Levels → Grids → Columns → Walls → Floors/Ceilings → Doors → Windows → Rooms
+  +-- FindTemplate() -> prefers Default_M_*.rte (metric mm)
+  +-- Creates: Levels -> Grids -> Columns -> Walls -> Floors/Ceilings -> Doors -> Windows -> Rooms
+```
+
+---
+
+## Project Structure (key files)
+
+```
+mcc-amplify-v4/
+|-- run.sh                              <- Start Ubuntu backend + frontend
+|-- backend/
+|   |-- app.py                          <- FastAPI entry point
+|   |-- .env                            <- Configuration (not committed)
+|   |-- pipeline/
+|   |   +-- pipeline.py                 <- Thin wrapper around PipelineOrchestrator
+|   |-- services/
+|   |   |-- core/orchestrator.py        <- Main pipeline orchestrator (all stages)
+|   |   |-- intelligence/               <- Post-detection middleware layer
+|   |   |   |-- type_resolver.py        <- Circular/rectangular/L-shape classification
+|   |   |   |-- cross_element_validator.py <- IoU, grid distance, isolation checks
+|   |   |   |-- validation_agent.py     <- DfMA rule enforcement (SS CP 65)
+|   |   |   +-- bim_translator_enricher.py <- Append metadata to Revit recipe
+|   |   |-- exporters/
+|   |   |   |-- rvt_exporter.py         <- Sends to Windows, receives .RVT
+|   |   |   +-- gltf_exporter.py        <- Writes .glb (Z-up to Y-up rotation)
+|   |   +-- corrections_logger.py       <- Logs human corrections for YOLO retraining
+|   +-- ml/weights/column-detect.pt     <- YOLO model weights
+|-- revit_server/RevitAddin/            <- C# Revit 2023 Add-in (build on Windows)
+|-- frontend/src/                       <- React + Three.js web UI
++-- tests/
+    +-- test_intelligence_middleware.py  <- 7 tests for intelligence layer
 ```
 
 ---
@@ -487,11 +607,13 @@ ModelBuilder (runs on Revit main thread via ExternalEvent)
 - [ ] `backend/.env` configured with at least one semantic AI API key
 - [ ] `backend/nvidia_key.txt` created with NVIDIA NIM key (for chat agent)
 - [ ] `WINDOWS_REVIT_SERVER=http://LT-HQ-277:5000` set correctly
+- [ ] Intelligence middleware env vars reviewed (see Part 5)
+- [ ] `backend/ml/weights/column-detect.pt` present
 - [ ] Data directories created
 - [ ] Windows hostname added to `/etc/hosts`
 - [ ] `curl http://LT-HQ-277:5000/health` returns `Revit Model Builder ready`
 - [ ] `./run.sh` starts without errors
-- [ ] Can upload a PDF and see progress through all 7 stages
+- [ ] Can upload a PDF and see progress through all pipeline stages
 - [ ] `.RVT` file appears in `data/models/rvt/`
 - [ ] `.glb` file appears in `data/models/gltf/`
 

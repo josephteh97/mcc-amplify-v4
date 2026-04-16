@@ -482,7 +482,7 @@ async def corrections_yolo_export(output_dir: str = "data/yolo_training"):
         raise HTTPException(
             403,
             "YOLO retraining is disabled. Set YOLO_RETRAIN_ENABLED=true in .env to enable. "
-            "The current ml/weights/yolov11_floorplan.pt is the authoritative model."
+            "The current ml/weights/column-detect.pt is the authoritative model."
         )
     result = corrections_log.export_yolo_training_data(output_dir=output_dir)
     if "error" in result:

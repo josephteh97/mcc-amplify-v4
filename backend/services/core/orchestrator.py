@@ -66,6 +66,12 @@ from backend.services.exporters.rvt_exporter import RvtExporter
 from backend.services.exporters.gltf_exporter import GltfExporter
 from backend.services.vision_comparator import VisionComparator
 
+# ── Intelligence layer ────────────────────────────────────────────────────────
+from backend.services.intelligence.type_resolver import resolve_types
+from backend.services.intelligence.cross_element_validator import validate_elements
+from backend.services.intelligence.validation_agent import enforce_rules
+from backend.services.intelligence.bim_translator_enricher import enrich_recipe
+
 
 class PipelineOrchestrator:
     """
@@ -86,15 +92,14 @@ class PipelineOrchestrator:
         self.gltf_exporter    = GltfExporter()
         self.vision_cmp       = VisionComparator()
 
-        # Load YOLO model inline (weights at ml/weights/yolov11_floorplan.pt)
+        # Load YOLO model (weights at ml/weights/column-detect.pt)
         self.yolo = None
-        yolo_path = Path(__file__).parent.parent.parent / "ml" / "weights" / "yolov11_floorplan.pt"
+        yolo_path = Path(__file__).parent.parent.parent / "ml" / "weights" / "column-detect.pt"
         if yolo_path.exists():
             try:
                 from ultralytics import YOLO
                 self.yolo = YOLO(str(yolo_path))
-                logger.info(f"✓ YOLO model loaded: {yolo_path.name}")
-                logger.info(f"  Classes: {', '.join(self.yolo.names.values())}")
+                logger.info(f"YOLO model loaded: {yolo_path.name}")
             except Exception as e:
                 logger.warning(f"YOLO load failed ({e}) — detection will be skipped")
         else:
@@ -236,6 +241,24 @@ class PipelineOrchestrator:
                     f"{len(grid_info.get('y_lines_px',[]))} H lines kept from PDF)."
                 )
 
+            # ── Stage 4c: Intelligence middleware (post-detection, pre-geometry) ──
+            progress(58, "Intelligence layer: type resolution & validation…")
+            _column_dets = []
+            if column_raw and image_data.get("image") is not None:
+                _column_dets = resolve_types(column_raw, image_data["image"])
+                _column_dets = validate_elements(
+                    _column_dets,
+                    grid_info=grid_info,
+                    max_grid_dist_px=float(os.getenv("MAX_GRID_DIST_PX", "80")),
+                    isolation_radius_px=float(os.getenv("ISOLATION_RADIUS_PX", "200")),
+                )
+                _column_dets = enforce_rules(
+                    _column_dets,
+                    grid_info=grid_info,
+                    min_bay_mm=float(os.getenv("MIN_BAY_MM", "3000")),
+                    max_bay_mm=float(os.getenv("MAX_BAY_MM", "12000")),
+                )
+
             # ── Stage 5: Semantic AI Analysis ─────────────────────────────────
             # Build structured element dict from pixel-space detections
             # so the geometry generator can snap them to the grid.
@@ -274,6 +297,10 @@ class PipelineOrchestrator:
                     f"storey={_profile.get('floor_to_floor_height_mm')}mm"
                 )
             recipe = await self.geometry_gen.build(enriched_data, grid_info)
+
+            # ── Stage 6.5: BIM Translator Enrichment ─────────────────────────
+            if _column_dets:
+                recipe = enrich_recipe(recipe, _column_dets)
 
             # ── Pre-clash validation ───────────────────────────────────────────
             validation_warnings = self._validate_recipe(recipe)
@@ -369,6 +396,8 @@ class PipelineOrchestrator:
                     "is_scanned":            is_scanned,
                     "grid_confidence":       grid_info.get("grid_confidence", 0.0),
                     "grid_confidence_label": grid_info.get("grid_confidence_label", "Unknown"),
+                    "intelligence_valid":    sum(1 for d in _column_dets if d.get("is_valid", True)) if _column_dets else 0,
+                    "intelligence_flagged":  sum(1 for d in _column_dets if not d.get("is_valid", True)) if _column_dets else 0,
                     "validation_warnings":   validation_warnings,
                     "vision_diff":           vision_diff,
                 },
