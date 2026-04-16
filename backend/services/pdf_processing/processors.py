@@ -10,6 +10,8 @@ import gc
 from typing import Dict, Any, List
 from loguru import logger
 
+from backend.services.security.secure_renderer import SecurityError
+
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 # Production sizing — supports A0/A1/AO+ engineering drawings at usable DPI.
@@ -18,6 +20,10 @@ from loguru import logger
 MAX_PIXELS    = 25_000_000  # 25 MP ceiling — handles A0 sheets at 100-130 DPI
 MAX_MEMORY_MB = 400         # bytes budget before tiling kicks in
 TILE_PX       = 2000        # tile side in pixels (keeps each tile < ~12 MB)
+
+# Page-geometry safety limits (mirrored from SecurePDFRenderer)
+MAX_DIMENSION_INCHES = 60   # no standard format exceeds this
+MAX_ASPECT_RATIO     = 4.0  # reject extreme aspect ratios (> 4:1)
 
 
 class VectorProcessor:
@@ -185,6 +191,21 @@ class StreamingProcessor:
 
             w_in = page.rect.width  / 72.0
             h_in = page.rect.height / 72.0
+
+            # ── Page dimension attack prevention ──────────────────────────
+            if w_in > MAX_DIMENSION_INCHES or h_in > MAX_DIMENSION_INCHES:
+                raise SecurityError(
+                    f"Page dimensions {w_in:.1f}\" x {h_in:.1f}\" exceed "
+                    f"{MAX_DIMENSION_INCHES}\" limit — possible dimension attack"
+                )
+
+            short_side = min(w_in, h_in)
+            long_side  = max(w_in, h_in)
+            if short_side > 0 and (long_side / short_side) > MAX_ASPECT_RATIO:
+                raise SecurityError(
+                    f"Aspect ratio {long_side / short_side:.1f}:1 exceeds "
+                    f"{MAX_ASPECT_RATIO}:1 limit — possible crafted PDF"
+                )
 
             # ── Cap DPI so total pixels stay within budget ─────────────────
             natural_px = (w_in * dpi) * (h_in * dpi)

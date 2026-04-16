@@ -46,6 +46,33 @@ _GEMINI_LAST_CALL_TS  = 0.0
 _GEMINI_MIN_INTERVAL  = float(os.getenv("GEMINI_MIN_INTERVAL_S", "13"))
 
 
+_RETRY_ATTEMPTS = int(os.getenv("SEMANTIC_RETRY_ATTEMPTS", "2"))
+_RETRY_BACKOFF  = float(os.getenv("SEMANTIC_RETRY_BACKOFF", "3.0"))
+
+
+def _retry_on_transient(fn, *args, attempts: int = _RETRY_ATTEMPTS, backoff: float = _RETRY_BACKOFF, **kwargs):
+    """Call *fn* with retry + exponential backoff for transient network errors."""
+    last_exc = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            # Only retry on network/timeout errors, not auth or malformed request
+            exc_name = type(exc).__name__
+            transient = any(k in exc_name.lower() for k in ("timeout", "connection", "network"))
+            if not transient and "429" not in str(exc) and "503" not in str(exc):
+                raise
+            if attempt < attempts:
+                wait = backoff * attempt
+                logger.warning(
+                    f"Transient error ({exc_name}) on attempt {attempt}/{attempts} "
+                    f"— retrying in {wait:.0f}s"
+                )
+                time.sleep(wait)
+    raise last_exc
+
+
 class SemanticAnalyzer:
     """
     Multi-backend semantic analyzer for floor plan understanding.
@@ -53,6 +80,9 @@ class SemanticAnalyzer:
     The active backend is determined by trying the backends listed in
     SEMANTIC_BACKEND_PRIORITY (or SEMANTIC_MODEL_BACKEND) in order.
     The first successfully initialised backend is used for all calls.
+
+    All external API calls are wrapped with retry logic for transient
+    network failures (timeouts, connection errors, 429/503).
     """
 
     def __init__(self):
@@ -433,35 +463,38 @@ class SemanticAnalyzer:
     # Backend call implementations
     # ------------------------------------------------------------------
     def _call_gemini(self, prompt: str, image: Image.Image, max_tokens: int = 32768) -> str:
-        """Call Google Gemini API (rate-limited)."""
-        self._gemini_wait()
-        config_kwargs = dict(
-            temperature=0.1,
-            max_output_tokens=max_tokens,
-            response_mime_type="application/json",
-        )
-        try:
-            config_kwargs["thinking_config"] = self._genai_types.ThinkingConfig(
-                thinking_budget=0
+        """Call Google Gemini API (rate-limited, with retry on transient errors)."""
+        def _do_call():
+            self._gemini_wait()
+            config_kwargs = dict(
+                temperature=0.1,
+                max_output_tokens=max_tokens,
+                response_mime_type="application/json",
             )
-        except AttributeError:
-            pass
+            try:
+                config_kwargs["thinking_config"] = self._genai_types.ThinkingConfig(
+                    thinking_budget=0
+                )
+            except AttributeError:
+                pass
 
-        response = self.client.models.generate_content(
-            model=self.model_id,
-            contents=[prompt, image],
-            config=self._genai_types.GenerateContentConfig(**config_kwargs),
-        )
-        try:
-            candidate = response.candidates[0] if response.candidates else None
-            if candidate and hasattr(candidate, "finish_reason"):
-                logger.debug(f"Gemini finish_reason: {candidate.finish_reason}")
-        except Exception:
-            pass
-        return response.text
+            response = self.client.models.generate_content(
+                model=self.model_id,
+                contents=[prompt, image],
+                config=self._genai_types.GenerateContentConfig(**config_kwargs),
+            )
+            try:
+                candidate = response.candidates[0] if response.candidates else None
+                if candidate and hasattr(candidate, "finish_reason"):
+                    logger.debug(f"Gemini finish_reason: {candidate.finish_reason}")
+            except Exception:
+                pass
+            return response.text
+
+        return _retry_on_transient(_do_call)
 
     def _call_anthropic(self, prompt: str, image: Image.Image, max_tokens: int = 4000) -> str:
-        """Call Anthropic Claude API with vision."""
+        """Call Anthropic Claude API with vision (with retry on transient errors)."""
         import base64
         import io
 
@@ -469,27 +502,30 @@ class SemanticAnalyzer:
         image.save(buf, format="JPEG", quality=85)
         b64_image = base64.standard_b64encode(buf.getvalue()).decode()
 
-        message = self.client.messages.create(
-            model=self.model_id,
-            max_tokens=max_tokens,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": b64_image,
+        def _do_call():
+            message = self.client.messages.create(
+                model=self.model_id,
+                max_tokens=max_tokens,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/jpeg",
+                                    "data": b64_image,
+                                },
                             },
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }
-            ],
-        )
-        return message.content[0].text
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ],
+            )
+            return message.content[0].text
+
+        return _retry_on_transient(_do_call)
 
     def _stream_ollama(self, payload: dict) -> str:
         """POST payload to Ollama /api/generate and return the full streamed text.

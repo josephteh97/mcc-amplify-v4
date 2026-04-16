@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 
 const UploadPanel = ({ onJobCreated, onProcessingComplete }) => {
   const [file, setFile] = useState(null);
@@ -7,6 +7,21 @@ const UploadPanel = ({ onJobCreated, onProcessingComplete }) => {
   const [error, setError] = useState(null);
   const fileInputRef = useRef(null);
   const pollIntervalRef = useRef(null);
+  const wsRef = useRef(null);
+
+  // Clean up WebSocket and polling on unmount
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+  }, []);
 
   const handleFileSelect = (e) => {
     const selected = e.target.files[0];
@@ -62,14 +77,14 @@ const UploadPanel = ({ onJobCreated, onProcessingComplete }) => {
         setStatus('processing');
       }
 
-      startPolling(job_id);
+      startProgressTracking(job_id);
     } catch (err) {
       setError(err.message);
       setStatus('error');
     }
   };
 
-  const startPolling = (id) => {
+  const startPollingFallback = (id) => {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
 
     pollIntervalRef.current = setInterval(async () => {
@@ -82,15 +97,82 @@ const UploadPanel = ({ onJobCreated, onProcessingComplete }) => {
 
         if (data.status === 'completed') {
           clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
           setStatus('completed');
           onProcessingComplete(id, data.result, file?.name);
         } else if (data.status === 'failed') {
           clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
           setStatus('error');
           setError(data.error || 'Pipeline processing failed.');
         }
       } catch { /* polling error — keep polling */ }
-    }, 2000);
+    }, 5000);
+  };
+
+  const startProgressTracking = (jobId) => {
+    // Close any existing WebSocket
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/${jobId}`);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      // WebSocket connected — no need for polling fallback
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.progress != null && data.progress >= 0) {
+          setProgress(data.progress);
+        }
+
+        if (data.type === 'completed') {
+          setProgress(100);
+          setStatus('completed');
+          onProcessingComplete(jobId, data.result, file?.name);
+          ws.close();
+          wsRef.current = null;
+        } else if (data.type === 'failed') {
+          setStatus('error');
+          setError(data.message || 'Pipeline processing failed.');
+          ws.close();
+          wsRef.current = null;
+        }
+      } catch { /* ignore malformed messages */ }
+    };
+
+    ws.onerror = () => {
+      // WebSocket failed — fall back to polling
+      wsRef.current = null;
+      startPollingFallback(jobId);
+    };
+
+    ws.onclose = (event) => {
+      // If the socket closed unexpectedly (not by us after completion/failure), fall back
+      if (wsRef.current === ws) {
+        wsRef.current = null;
+        startPollingFallback(jobId);
+      }
+    };
+
+    // Start polling as a safety net in case WebSocket never connects
+    // The polling will be cleared once onopen fires
+    startPollingFallback(jobId);
   };
 
   const isProcessing = status === 'uploading' || status === 'processing';

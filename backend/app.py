@@ -7,6 +7,8 @@ Main FastAPI Application
 Amplify-Like Floor Plan to BIM System
 """
 
+import asyncio
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -34,14 +36,33 @@ setup_logger()
 chat_agent = ChatAgent()
 
 
+_revit_healthy = False  # shared flag for frontend status queries
+
+
+async def _revit_heartbeat(client, interval: int = 30):
+    """Periodically check Revit server health so stale connections are detected early."""
+    global _revit_healthy
+    while True:
+        try:
+            _revit_healthy = await client.check_health()
+            if not _revit_healthy:
+                logger.warning("Revit heartbeat: server unreachable")
+        except Exception as e:
+            _revit_healthy = False
+            logger.warning(f"Revit heartbeat error: {e}")
+        await asyncio.sleep(interval)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Lifespan context manager for startup and shutdown events
     """
+    global _revit_healthy
+
     # Startup
     logger.info("Starting Amplify Floor Plan AI System")
-    
+
     # Create necessary directories
     Path("data/uploads").mkdir(parents=True, exist_ok=True)
     Path("data/processed").mkdir(parents=True, exist_ok=True)
@@ -49,22 +70,27 @@ async def lifespan(app: FastAPI):
     Path("data/models/rvt").mkdir(parents=True, exist_ok=True)
     Path("data/models/gltf").mkdir(parents=True, exist_ok=True)
     Path("logs").mkdir(exist_ok=True)
-    
+
     # Test Windows Revit server connection
     from services.revit_client import RevitClient
     revit_client = RevitClient()
-    is_available = await revit_client.check_health()
-    
-    if is_available:
-        logger.info(f"✓ Connected to Windows Revit server")
+    _revit_healthy = await revit_client.check_health()
+
+    if _revit_healthy:
+        logger.info("✓ Connected to Windows Revit server")
     else:
-        logger.warning(f"✗ Cannot connect to Windows Revit server - RVT export will fail")
-    
+        logger.warning("✗ Cannot connect to Windows Revit server - RVT export will fail")
+
+    # Start periodic heartbeat (every 30 s)
+    heartbeat_interval = int(os.getenv("REVIT_HEARTBEAT_INTERVAL", "30"))
+    heartbeat_task = asyncio.create_task(_revit_heartbeat(revit_client, heartbeat_interval))
+
     logger.info("System ready!")
-    
+
     yield  # Application runs here
-    
+
     # Shutdown
+    heartbeat_task.cancel()
     logger.info("Shutting down Amplify Floor Plan AI System")
     await ws_manager.disconnect_all()
 
@@ -130,6 +156,12 @@ async def chat_websocket(websocket: WebSocket, user_id: str):
     except Exception as exc:
         logger.error(f"Chat WebSocket error for {user_id}: {exc}")
         chat_agent.on_disconnect(user_id)
+
+@app.get("/api/revit-health")
+async def revit_health():
+    """Return Revit server connectivity status (updated by heartbeat)."""
+    return {"revit_available": _revit_healthy}
+
 
 @app.get("/")
 async def root():

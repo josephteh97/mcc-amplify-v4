@@ -2,6 +2,13 @@
 // Revit 2023 Application Macro — Amplify AI BIM Builder
 // =============================================================================
 //
+// *** DEPRECATED ***
+// This macro approach is the legacy fallback.  The production path uses the
+// TCP-based csharp_service (revit_server/csharp_service/) which supports
+// session-based placement, step-by-step MCP agent builds, and warning
+// feedback.  Use REVIT_MODE=file in .env only if the TCP add-in cannot
+// be loaded into Revit.
+//
 // HOW TO USE (Macro Manager approach)
 // ------------------------------------
 // 1. In Revit 2023: Manage tab → Macros → Macro Manager

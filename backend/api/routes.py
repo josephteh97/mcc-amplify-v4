@@ -20,15 +20,20 @@ from loguru import logger
 from pydantic import BaseModel
 
 from api.websocket import manager as ws_manager
+
+# Concurrency limiter — prevents resource exhaustion from parallel pipeline runs
+_MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_JOBS", "3"))
+_pipeline_semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 from pipeline import FloorPlanPipeline
 from services.corrections_logger import CorrectionsLogger
+from services.job_store import JobStore
 from services.revit_client import RevitClient
 from utils.file_handler import save_upload_file
 
 router = APIRouter()
 
-# In-memory job status store (upgrade to Redis for production)
-job_status: dict = {}
+# Persistent SQLite-backed job store with LRU eviction
+job_store = JobStore(db_path="data/jobs.db", max_jobs=100)
 
 pipeline          = FloorPlanPipeline()
 revit_client      = RevitClient()
@@ -41,36 +46,6 @@ class ProcessRequest(BaseModel):
 
 # ── Upload ─────────────────────────────────────────────────────────────────────
 
-_MAX_JOBS = 100   # keep the last N jobs in memory; least-recently-accessed are evicted
-
-
-def _touch(job_id: str):
-    """Record that this job was accessed right now (used for LRU eviction)."""
-    if job_id in job_status:
-        job_status[job_id]["accessed_at"] = time.time()
-
-
-def _evict_old_jobs():
-    """
-    Drop the least-recently-accessed jobs when job_status exceeds _MAX_JOBS.
-
-    LRU policy (not wall-clock creation time): a job that was polled or
-    downloaded 30 seconds ago is kept; a job created 2 hours ago but never
-    accessed again is the first to go.  This is important for long-running
-    pipelines (cost estimation, multi-floor analysis) where clients hold a
-    job open for extended periods.
-    """
-    if len(job_status) >= _MAX_JOBS:
-        n_remove = len(job_status) - _MAX_JOBS + 1
-        # Sort by last access time; fall back to created_at for jobs never accessed.
-        by_lru = sorted(
-            job_status.items(),
-            key=lambda kv: kv[1].get("accessed_at", kv[1].get("created_at", 0)),
-        )
-        for jid, _ in by_lru[:n_remove]:
-            logger.debug(f"LRU evict: job {jid}")
-            job_status.pop(jid, None)
-
 
 @router.post("/upload")
 async def upload_floor_plan(file: UploadFile = File(...)):
@@ -78,17 +53,16 @@ async def upload_floor_plan(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Only PDF files are supported")
 
-    _evict_old_jobs()
     job_id = str(uuid.uuid4())
     file_path = await save_upload_file(file, job_id)
 
-    job_status[job_id] = {
+    job_store.put(job_id, {
         "status":     "uploaded",
         "progress":   0,
         "message":    "File uploaded",
         "filename":   file.filename,
         "created_at": time.time(),
-    }
+    })
     logger.info(f"Uploaded: {file.filename} → job {job_id}")
     return {"job_id": job_id, "filename": file.filename, "message": "Uploaded successfully"}
 
@@ -102,17 +76,18 @@ async def process_floor_plan(
     background_tasks: BackgroundTasks,
 ):
     """Start the AI pipeline for an uploaded PDF."""
-    if job_id not in job_status:
+    job = job_store.get(job_id)
+    if job is None:
         raise HTTPException(404, "Job not found")
 
-    filename = job_status[job_id].get("filename", f"{job_id}.pdf")
+    filename = job.get("filename", f"{job_id}.pdf")
     ext = Path(filename).suffix.lower()
     file_path = f"data/uploads/{job_id}{ext}"
 
     if not Path(file_path).exists():
         raise HTTPException(404, "Uploaded file not found on disk")
 
-    job_status[job_id].update({"status": "processing", "progress": 5, "message": "Pipeline starting…"})
+    job_store.update(job_id, {"status": "processing", "progress": 5, "message": "Pipeline starting…"})
 
     background_tasks.add_task(_run_pipeline_task, job_id, file_path, request.project_name)
     return {"job_id": job_id, "status": "processing", "message": "Processing started"}
@@ -120,11 +95,15 @@ async def process_floor_plan(
 
 async def _run_pipeline_task(job_id: str, file_path: str, project_name: Optional[str]):
     """Background task — runs the full pipeline and pushes updates via WebSocket."""
+    async with _pipeline_semaphore:
+        await _run_pipeline_task_inner(job_id, file_path, project_name)
+
+
+async def _run_pipeline_task_inner(job_id: str, file_path: str, project_name: Optional[str]):
+    """Actual pipeline work, guarded by the concurrency semaphore."""
 
     def on_progress(pct: int, msg: str):
-        job_status[job_id]["progress"] = pct
-        job_status[job_id]["message"] = msg
-        # Schedule WebSocket push on the running event loop (non-blocking)
+        job_store.update(job_id, {"progress": pct, "message": msg})
         asyncio.ensure_future(ws_manager.send_progress(job_id, {
             "type":     "progress",
             "job_id":   job_id,
@@ -132,10 +111,11 @@ async def _run_pipeline_task(job_id: str, file_path: str, project_name: Optional
             "message":  msg,
         }))
 
-    pdf_filename = job_status[job_id].get("filename", "")
+    job = job_store.get(job_id) or {}
+    pdf_filename = job.get("filename", "")
     try:
         result = await pipeline.process(file_path, job_id, project_name, pdf_filename=pdf_filename, progress_callback=on_progress)
-        job_status[job_id].update({"status": "completed", "progress": 100, "result": result})
+        job_store.update(job_id, {"status": "completed", "progress": 100, "result": result})
         await ws_manager.send_progress(job_id, {
             "type":     "completed",
             "job_id":   job_id,
@@ -144,7 +124,7 @@ async def _run_pipeline_task(job_id: str, file_path: str, project_name: Optional
         })
     except Exception as e:
         logger.error(f"Pipeline failed for job {job_id}: {e}")
-        job_status[job_id].update({"status": "failed", "progress": -1, "error": str(e)})
+        job_store.update(job_id, {"status": "failed", "progress": -1, "error": str(e)})
         await ws_manager.send_progress(job_id, {
             "type":    "failed",
             "job_id":  job_id,
@@ -157,18 +137,18 @@ async def _run_pipeline_task(job_id: str, file_path: str, project_name: Optional
 
 @router.get("/status/{job_id}")
 async def get_status(job_id: str):
-    if job_id not in job_status:
+    job = job_store.get(job_id)
+    if job is None:
         raise HTTPException(404, "Job not found")
-    _touch(job_id)
-    return job_status[job_id]
+    return job
 
 
 # ── Downloads ──────────────────────────────────────────────────────────────────
 
 @router.get("/download/rvt/{job_id}")
 async def download_rvt(job_id: str):
-    _require_completed(job_id)
-    rvt_path = job_status[job_id]["result"]["files"].get("rvt")
+    job = _require_completed(job_id)
+    rvt_path = job.get("result", {}).get("files", {}).get("rvt")
     if not rvt_path or not Path(rvt_path).exists():
         raise HTTPException(404, "RVT file not available — Revit server may have been unreachable")
     return FileResponse(rvt_path, media_type="application/octet-stream", filename=Path(rvt_path).name)
@@ -176,9 +156,9 @@ async def download_rvt(job_id: str):
 
 @router.get("/download/gltf/{job_id}")
 async def download_gltf(job_id: str):
-    _require_completed(job_id)
-    gltf_path = job_status[job_id]["result"]["files"]["gltf"]
-    if not Path(gltf_path).exists():
+    job = _require_completed(job_id)
+    gltf_path = job.get("result", {}).get("files", {}).get("gltf")
+    if not gltf_path or not Path(gltf_path).exists():
         raise HTTPException(404, "glTF file not found")
     return FileResponse(gltf_path, media_type="model/gltf-binary", filename=f"{job_id}.glb")
 
@@ -194,37 +174,38 @@ async def upload_rvt(file: UploadFile = File(...), background_tasks: BackgroundT
     job_id = str(uuid.uuid4())
     file_path = await save_upload_file(file, job_id)
 
-    job_status[job_id] = {
+    job_store.put(job_id, {
         "status":     "uploaded_rvt",
         "progress":   0,
         "message":    "RVT uploaded, rendering queued",
         "filename":   file.filename,
         "file_path":  str(file_path),
         "created_at": time.time(),
-    }
+    })
     background_tasks.add_task(_run_rvt_render_task, job_id, str(file_path))
     return {"job_id": job_id, "message": "RVT uploaded and rendering started"}
 
 
 async def _run_rvt_render_task(job_id: str, rvt_path: str):
     try:
-        job_status[job_id].update({"status": "rendering", "progress": 10})
+        job_store.update(job_id, {"status": "rendering", "progress": 10})
         render_path = await revit_client.render_model(rvt_path, job_id)
-        job_status[job_id].update({
+        job_store.update(job_id, {
             "status": "completed",
             "progress": 100,
             "result": {"files": {"render": render_path, "rvt": rvt_path}},
         })
     except Exception as e:
         logger.error(f"RVT render failed for job {job_id}: {e}")
-        job_status[job_id].update({"status": "failed", "error": str(e)})
+        job_store.update(job_id, {"status": "failed", "error": str(e)})
 
 
 @router.get("/download/render/{job_id}")
 async def download_render(job_id: str):
-    if job_id not in job_status:
+    job = job_store.get(job_id)
+    if job is None:
         raise HTTPException(404, "Job not found")
-    render_path = job_status[job_id].get("result", {}).get("files", {}).get("render")
+    render_path = job.get("result", {}).get("files", {}).get("render")
     if not render_path or not Path(render_path).exists():
         raise HTTPException(404, "Render not found")
     return FileResponse(render_path, media_type="image/png")
@@ -249,7 +230,7 @@ _BLOCKED_FIELDS        = {"id", "level", "top_level", "host_wall_id",
 @router.get("/model/{job_id}/recipe")
 async def get_recipe(job_id: str):
     """Return the stored RevitTransaction recipe JSON for a completed job."""
-    if job_id not in job_status:
+    if not job_store.contains(job_id):
         raise HTTPException(404, "Job not found")
     tx = Path(f"data/models/rvt/{job_id}_transaction.json")
     if not tx.exists():
@@ -271,7 +252,7 @@ async def patch_recipe(job_id: str, patch: RecipePatch):
     Apply a single-element correction to the on-disk recipe, then
     immediately re-export the glTF (fast path, no Revit call).
     """
-    if job_id not in job_status:
+    if not job_store.contains(job_id):
         raise HTTPException(404, "Job not found")
     if patch.element_type not in _ALLOWED_ELEMENT_TYPES:
         raise HTTPException(400, f"Unknown element_type: {patch.element_type!r}")
@@ -329,9 +310,9 @@ async def rebuild_rvt_endpoint(job_id: str, background_tasks: BackgroundTasks):
     Send the (user-corrected) recipe to the Revit server and rebuild the RVT.
     Frontend polls /api/status/{job_id} for completion.
     """
-    if job_id not in job_status:
+    if not job_store.contains(job_id):
         raise HTTPException(404, "Job not found")
-    job_status[job_id].update({
+    job_store.update(job_id, {
         "status":   "rebuilding",
         "progress": 10,
         "message":  "Sending corrected model to Revit…",
@@ -342,14 +323,15 @@ async def rebuild_rvt_endpoint(job_id: str, background_tasks: BackgroundTasks):
 
 async def _run_rebuild_task(job_id: str):
     try:
-        pdf_filename = job_status[job_id].get("filename", "")
+        job = job_store.get(job_id) or {}
+        pdf_filename = job.get("filename", "")
         rvt_path = await pipeline.orchestrator.rebuild_rvt(job_id, pdf_filename)
-        job_status[job_id].update({
+        job_store.update(job_id, {
             "status":   "completed",
             "progress": 100,
             "message":  "Revit rebuild complete",
         })
-        job_status[job_id].setdefault("result", {}).setdefault("files", {})["rvt"] = rvt_path
+        job_store.setdefault_nested(job_id, "result", "files", {"rvt": rvt_path})
         await ws_manager.send_progress(job_id, {
             "type":     "completed",
             "job_id":   job_id,
@@ -358,8 +340,7 @@ async def _run_rebuild_task(job_id: str):
         })
     except Exception as e:
         logger.error(f"Rebuild failed for job {job_id}: {e}")
-        # Revert to completed so the user can try again
-        job_status[job_id].update({
+        job_store.update(job_id, {
             "status":   "completed",
             "progress": 100,
             "message":  f"Revit rebuild failed: {e}",
@@ -379,14 +360,14 @@ async def agent_build_endpoint(job_id: str, background_tasks: BackgroundTasks):
 
     Frontend polls /api/status/{job_id} for progress.
     """
-    if job_id not in job_status:
+    if not job_store.contains(job_id):
         raise HTTPException(404, "Job not found")
 
     tx_path = Path(f"data/models/rvt/{job_id}_transaction.json")
     if not tx_path.exists():
         raise HTTPException(404, "Recipe not found — run the full pipeline first")
 
-    job_status[job_id].update({
+    job_store.update(job_id, {
         "status":   "agent_building",
         "progress": 5,
         "message":  "Claude agent starting Revit session…",
@@ -398,7 +379,7 @@ async def agent_build_endpoint(job_id: str, background_tasks: BackgroundTasks):
 async def _run_agent_build_task(job_id: str, transaction_path: str):
     """Background task: run RevitAgent on an existing transaction JSON."""
     def _on_progress(msg: str):
-        job_status[job_id]["message"] = f"Agent: {msg}"
+        job_store.update(job_id, {"message": f"Agent: {msg}"})
 
     try:
         from agents.revit_agent import RevitAgent
@@ -409,12 +390,12 @@ async def _run_agent_build_task(job_id: str, transaction_path: str):
         result = await agent.run(recipe, job_id, on_progress=_on_progress)
 
         if result["status"] == "done":
-            job_status[job_id].update({
+            job_store.update(job_id, {
                 "status":   "completed",
                 "progress": 100,
                 "message":  f"Agent built {result['placed_count']} elements in {result['turns']} turns.",
             })
-            job_status[job_id].setdefault("result", {}).setdefault("files", {})["rvt"] = result["rvt_path"]
+            job_store.setdefault_nested(job_id, "result", "files", {"rvt": result["rvt_path"]})
             await ws_manager.send_progress(job_id, {
                 "type":     "completed",
                 "job_id":   job_id,
@@ -426,7 +407,7 @@ async def _run_agent_build_task(job_id: str, transaction_path: str):
 
     except Exception as e:
         logger.error(f"Agent build failed for job {job_id}: {e}")
-        job_status[job_id].update({
+        job_store.update(job_id, {
             "status":   "completed",
             "progress": 100,
             "message":  f"Agent build failed: {e}",
@@ -689,9 +670,11 @@ async def health():
 
 # ── Helper ─────────────────────────────────────────────────────────────────────
 
-def _require_completed(job_id: str):
-    if job_id not in job_status:
+def _require_completed(job_id: str) -> dict:
+    """Return job data if completed; raise HTTPException otherwise."""
+    job = job_store.get(job_id)
+    if job is None:
         raise HTTPException(404, "Job not found")
-    if job_status[job_id]["status"] != "completed":
+    if job.get("status") != "completed":
         raise HTTPException(400, "Job not completed yet")
-    _touch(job_id)   # downloading/checking a completed job counts as access
+    return job
