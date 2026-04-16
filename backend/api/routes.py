@@ -20,15 +20,15 @@ from loguru import logger
 from pydantic import BaseModel
 
 from api.websocket import manager as ws_manager
-
-# Concurrency limiter — prevents resource exhaustion from parallel pipeline runs
-_MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_JOBS", "3"))
-_pipeline_semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 from pipeline import FloorPlanPipeline
 from services.corrections_logger import CorrectionsLogger
 from services.job_store import JobStore
 from services.revit_client import RevitClient
 from utils.file_handler import save_upload_file
+
+# Concurrency limiter — prevents resource exhaustion from parallel pipeline runs
+_MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_JOBS", "3"))
+_pipeline_semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
 router = APIRouter()
 

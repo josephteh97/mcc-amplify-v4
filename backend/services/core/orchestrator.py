@@ -18,7 +18,6 @@ ignored because it is often unreliable.
 """
 
 import asyncio
-import copy
 import json
 import math
 import os
@@ -142,7 +141,7 @@ class PipelineOrchestrator:
             # Request 300 DPI so 800 mm columns at 1:400 appear as ~24 px —
             # the same scale the YOLO model was trained on.  The renderer's
             # MAX_PIXELS cap will reduce DPI automatically for very large sheets
-            # (A0 caps at ~127 DPI); _run_yolo handles that by upsampling.
+            # (A0 caps at ~127 DPI); run_yolo handles that by upsampling.
             progress(25, "Track B: raster rendering…")
             image_data = await self.stream_processor.render_safe(pdf_path, dpi=300)
 
@@ -182,27 +181,13 @@ class PipelineOrchestrator:
             # due to rasterisation differences, which causes a world-coordinate
             # offset of hundreds of mm (e.g. 30 px / 280 px × 8400 mm ≈ 900 mm).
             #
-            # Strategy (two-step, both non-fatal):
-            #   Step 1 — align_pixels_to_columns: update ONLY pixel positions to
-            #             match YOLO column centres while keeping all mm spacings.
-            #             Never fails, silently skips per-axis if count mismatches.
-            #   Step 2 — refine_with_columns: full re-detection of spacings from
-            #             the updated positions.  Attempted but skipped if it raises
-            #             GridDimensionMissingError (new gaps have no annotations).
+            # Align grid pixel positions to YOLO column centres while
+            # keeping all mm spacings from the PDF vector layer intact.
             column_raw = [d for d in refined_detections if d.get("type") == "column"]
             if len(column_raw) >= 2:
-                # Step 1: always run — aligns pixel reference, never fails.
                 grid_info = self.grid_detector.align_pixels_to_columns(
                     grid_info, column_raw
                 )
-
-                # NOTE: refine_with_columns is intentionally NOT called here.
-                # The structural grid (number of lines + mm spacings) is derived
-                # exclusively from the PDF vector data — it is the authoritative
-                # datum.  Columns are slaves to the grid, never the reverse.
-                # align_pixels_to_columns (Step 1) is sufficient: it updates pixel
-                # reference positions only when the YOLO column count matches the
-                # detected grid line count, preserving all mm spacings.
                 logger.info(
                     f"Grid pixel alignment complete — grid is PDF-authoritative "
                     f"({len(grid_info.get('x_lines_px',[]))} V × "
@@ -506,9 +491,6 @@ class PipelineOrchestrator:
                 image_data["width"], image_data["height"]
             )
 
-    # _enhance_for_yolo and _run_yolo moved to services.yolo_runner
-    # _annotate_columns_from_vector_text moved to services.column_annotator
-
     def _format_for_geometry(self, detections: list) -> dict:
         """
         Convert flat YOLO detections (pixel-space bboxes) into the structured
@@ -564,8 +546,6 @@ class PipelineOrchestrator:
                 output["rooms"].append(base)
 
         return output
-
-    # _annotate_columns_from_vector_text → services.column_annotator.annotate_columns
 
     def _apply_revit_corrections(self, recipe: dict, corrections: dict) -> dict:
         """

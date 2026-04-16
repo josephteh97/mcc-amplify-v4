@@ -677,58 +677,6 @@ Dimension guidelines (use as reference when estimating unannotated columns):
 
 IMPORTANT: Respond with ONLY valid JSON. No preamble, no explanation, just the JSON object."""
 
-    def _create_prompt_text_only(self, detected_elements: Dict, grid_info: Dict) -> str:
-        """
-        Minimal prompt for text-only models (no image, e.g. qwen2.5-instruct).
-
-        Gives the model the already-parsed structural data and asks it only to:
-          • Pick one building_type and construction_type
-          • Return the column list verbatim (width_mm / depth_mm already filled by PDF parser)
-        Schema is intentionally tiny to prevent hallucination of placeholder strings.
-        """
-        cols = detected_elements.get("columns", [])
-        col_entries = []
-        for i, c in enumerate(cols):
-            w     = c.get("width_mm")    or c.get("w_mm")    or "null"
-            d     = c.get("depth_mm")    or c.get("d_mm")    or "null"
-            diam  = c.get("diameter_mm") or "null"
-            mark  = c.get("type_mark")   or c.get("mark")    or f"C{i+1}"
-            shape = "circular" if c.get("diameter_mm") else "rectangular"
-            col_entries.append(
-                f'{{"id":{i},"type_mark":"{mark}","shape":"{shape}",'
-                f'"width_mm":{w},"depth_mm":{d},"diameter_mm":{diam}}}'
-            )
-        cols_json = "[" + ",".join(col_entries) + "]"
-
-        x_sp  = grid_info.get("x_spacings_mm", [])
-        y_sp  = grid_info.get("y_spacings_mm", [])
-        span_x = f"{sum(x_sp):.0f}" if x_sp else "unknown"
-        span_y = f"{sum(y_sp):.0f}" if y_sp else "unknown"
-
-        # Build the full expected JSON as a concrete template so the model
-        # just replaces the two placeholder fields — minimises hallucination
-        # and avoids the mis-structured output (bare list, unclosed dict, etc.)
-        template = (
-            '{\n'
-            '  "building_type": "commercial",\n'
-            '  "construction_type": "concrete",\n'
-            '  "floor_count": 1,\n'
-            f'  "validated_elements": {{"columns": {cols_json}}},\n'
-            '  "inferred_properties": {"total_floor_area": null}\n'
-            '}'
-        )
-        return (
-            "You are a structural engineering assistant. "
-            "Output ONLY the JSON object below — replace building_type and "
-            "construction_type with the correct values, keep everything else identical.\n\n"
-            f"Context: grid {span_x}mm × {span_y}mm, "
-            f"{len(cols)} structural columns.\n\n"
-            f"{template}\n\n"
-            "building_type must be one of: residential / commercial / industrial / mixed\n"
-            "construction_type must be one of: concrete / steel / timber / masonry\n"
-            "Do NOT alter any numeric values. Output ONLY the JSON, nothing else."
-        )
-
     def _create_prompt_ollama_simple(self, detected_elements: Dict, grid_info: Dict) -> str:
         """
         Ultra-minimal prompt for Ollama vision models used as text-only.

@@ -9,7 +9,7 @@ Amplify-Like Floor Plan to BIM System
 
 import asyncio
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -19,12 +19,10 @@ import os
 from dotenv import load_dotenv
 from loguru import logger
 
-from pipeline import FloorPlanPipeline
 from api.routes import router as api_router
 from api.websocket import manager as ws_manager, ws_router
 from utils.logger import setup_logger
 from chat_agent.agent import ChatAgent
-from fastapi import WebSocketDisconnect
 
 # Load environment variables
 load_dotenv()

@@ -50,7 +50,6 @@ try:
         Tool,
         TextContent,
         Resource,
-        EmbeddedResource,
     )
     _MCP_AVAILABLE = True
 except ImportError:

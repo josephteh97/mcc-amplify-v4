@@ -10,20 +10,17 @@ import gc
 from typing import Dict, Any, List
 from loguru import logger
 
-from backend.services.security.secure_renderer import SecurityError
+from backend.services.security.secure_renderer import (
+    SecurityError,
+    SecurePDFRenderer,
+)
 
-
-# ── Constants ─────────────────────────────────────────────────────────────────
-# Production sizing — supports A0/A1/AO+ engineering drawings at usable DPI.
-# At 25 MP: a 46.8"×33.1" A0-equivalent sheet renders at ~127 DPI (vs 72 DPI
-# at the old 8 MP limit).  Memory est. for 25 MP direct render: ~107 MB.
-MAX_PIXELS    = 25_000_000  # 25 MP ceiling — handles A0 sheets at 100-130 DPI
-MAX_MEMORY_MB = 400         # bytes budget before tiling kicks in
-TILE_PX       = 2000        # tile side in pixels (keeps each tile < ~12 MB)
-
-# Page-geometry safety limits (mirrored from SecurePDFRenderer)
-MAX_DIMENSION_INCHES = 60   # no standard format exceeds this
-MAX_ASPECT_RATIO     = 4.0  # reject extreme aspect ratios (> 4:1)
+# Reuse authoritative constants from the security layer
+MAX_PIXELS            = SecurePDFRenderer.MAX_PIXEL_COUNT
+MAX_MEMORY_MB         = SecurePDFRenderer.MAX_MEMORY_MB
+MAX_DIMENSION_INCHES  = SecurePDFRenderer.MAX_DIMENSION_INCHES
+MAX_ASPECT_RATIO      = SecurePDFRenderer.MAX_ASPECT_RATIO
+TILE_PX               = 2000  # tile side in pixels (keeps each tile < ~12 MB)
 
 
 class VectorProcessor:
@@ -173,9 +170,6 @@ class StreamingProcessor:
     def __init__(self, ml_detector=None):
         self.ml_detector    = ml_detector
         self.vector_processor = VectorProcessor()
-
-    async def extract(self, pdf_path: str) -> Dict[str, Any]:
-        return self.vector_processor.extract(pdf_path)
 
     async def render_safe(self, pdf_path: str, dpi: int = 150) -> Dict[str, Any]:
         """

@@ -239,30 +239,11 @@ _ReSharper*/
 # DATA DIRECTORIES
 # ============================================
 
-# Uploaded files
-linux_server/data/uploads/*
-linux_server/data/processed/*
-linux_server/data/models/rvt/*
-linux_server/data/models/gltf/*
-linux_server/data/models/revit_transactions/*
-linux_server/data/cache/*
-
-# Keep directory structure with .gitkeep
-!linux_server/data/uploads/.gitkeep
-!linux_server/data/processed/.gitkeep
-!linux_server/data/models/rvt/.gitkeep
-!linux_server/data/models/gltf/.gitkeep
-!linux_server/data/models/revit_transactions/.gitkeep
-
 # Database files
 *.db
 *.sqlite
 *.sqlite3
 *.db-journal
-
-# Windows output
-windows_server/output/*
-!windows_server/output/.gitkeep
 
 # ============================================
 # LOGS
@@ -272,17 +253,6 @@ windows_server/output/*
 *.log
 logs/
 *.pid
-
-# Specific log directories
-linux_server/logs/*.log
-linux_server/logs/*.pid
-windows_server/csharp_service/logs/*.log
-windows_server/python_service/logs/*.log
-
-# Keep log directories
-!linux_server/logs/.gitkeep
-!windows_server/csharp_service/logs/.gitkeep
-!windows_server/python_service/logs/.gitkeep
 
 # ============================================
 # OPERATING SYSTEM

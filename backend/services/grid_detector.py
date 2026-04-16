@@ -100,20 +100,6 @@ _DIM_RE         = re.compile(r'^\s*(\d{3,5})\s*$')
 _H_LABEL_RE     = re.compile(r'^[A-Za-z]{1,2}$')
 
 
-def cluster_pos(pos: List[float], tol: float) -> List[float]:
-    """Group sorted float positions within tol into cluster means."""
-    if not pos:
-        return []
-    s   = sorted(pos)
-    cls = [[s[0]]]
-    for p in s[1:]:
-        if p - cls[-1][-1] <= tol:
-            cls[-1].append(p)
-        else:
-            cls.append([p])
-    return [sum(c) / len(c) for c in cls]
-
-
 # ── Main class ─────────────────────────────────────────────────────────────────
 
 class GridDetector:
@@ -202,10 +188,6 @@ class GridDetector:
 
     def align_pixels_to_columns(self, grid_info: Dict, column_detections: List[Dict]) -> Dict:
         """Grid lines are fixed. This method intentionally does nothing."""
-        return grid_info
-
-    def refine_with_columns(self, grid_info, *args, **kwargs) -> Dict:
-        """No-op — kept for import compatibility with older call sites."""
         return grid_info
 
     # ------------------------------------------------------------------

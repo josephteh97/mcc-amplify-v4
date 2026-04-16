@@ -44,6 +44,24 @@ def _is_beam_label(txt: str) -> bool:
     return bool(m and _BEAM_MARK_PREFIX.match(m.group(1)))
 
 
+def _scan_schedule_texts(texts, schedule: dict) -> None:
+    """Parse type-mark + dimension pairs from *texts* into *schedule* dict."""
+    for txt in texts:
+        mark_m = _RE_MARK.search(txt)
+        if not mark_m:
+            continue
+        mark = mark_m.group(1)
+        if _BEAM_MARK_PREFIX.match(mark):
+            continue
+        rect_m = _RE_RECT.search(txt)
+        circ_m = _RE_CIRC.search(txt)
+        if rect_m and mark not in schedule:
+            schedule[mark] = (float(rect_m.group(1)), float(rect_m.group(2)), False)
+        elif circ_m and mark not in schedule:
+            diam = float(circ_m.group(1) or circ_m.group(2))
+            schedule[mark] = (diam, diam, True)
+
+
 def annotate_columns(
     detections: dict,
     vector_data: dict,
@@ -88,36 +106,8 @@ def annotate_columns(
 
     # ── Pass 1: Build global type-mark → dimension table ──────────────────
     schedule: dict[str, tuple] = {}
-    for _, _, txt in text_px:
-        mark_m = _RE_MARK.search(txt)
-        if not mark_m:
-            continue
-        mark = mark_m.group(1)
-        if _BEAM_MARK_PREFIX.match(mark):
-            continue
-        rect_m = _RE_RECT.search(txt)
-        circ_m = _RE_CIRC.search(txt)
-        if rect_m and mark not in schedule:
-            schedule[mark] = (float(rect_m.group(1)), float(rect_m.group(2)), False)
-        elif circ_m and mark not in schedule:
-            diam = float(circ_m.group(1) or circ_m.group(2))
-            schedule[mark] = (diam, diam, True)
-
-    # ── Pass 1 (supplement): scan text from schedule pages ────────────────
-    for txt in (extra_schedule_texts or []):
-        mark_m = _RE_MARK.search(txt)
-        if not mark_m:
-            continue
-        mark = mark_m.group(1)
-        if _BEAM_MARK_PREFIX.match(mark):
-            continue
-        rect_m = _RE_RECT.search(txt)
-        circ_m = _RE_CIRC.search(txt)
-        if rect_m and mark not in schedule:
-            schedule[mark] = (float(rect_m.group(1)), float(rect_m.group(2)), False)
-        elif circ_m and mark not in schedule:
-            diam = float(circ_m.group(1) or circ_m.group(2))
-            schedule[mark] = (diam, diam, True)
+    _scan_schedule_texts((txt for _, _, txt in text_px), schedule)
+    _scan_schedule_texts(extra_schedule_texts or [], schedule)
 
     if schedule:
         logger.info(
@@ -179,9 +169,9 @@ def annotate_columns(
         search_r = max(col_w, col_h, 200) * 3.0
 
         nearby = sorted(
-            [(math.hypot(tx - cx, ty - cy), txt)
+            [(d, txt)
              for tx, ty, txt in text_px
-             if math.hypot(tx - cx, ty - cy) < search_r],
+             if (d := math.hypot(tx - cx, ty - cy)) < search_r],
             key=lambda x: x[0],
         )
 
