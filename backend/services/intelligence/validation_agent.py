@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from loguru import logger
 
+from backend.services.intelligence.cross_element_validator import OFF_GRID, ISOLATED
+
 _MIN_BAY_MM = 3000.0
 _MAX_BAY_MM = 12000.0
 
@@ -38,10 +40,8 @@ def enforce_rules(
     """
     for det in detections:
         det["dfma_violations"] = []
-        det["is_orphan"] = (
-            "off_grid" in det.get("validation_flags", []) and
-            "isolated" in det.get("validation_flags", [])
-        )
+        flags = det.get("validation_flags", [])
+        det["is_orphan"] = OFF_GRID in flags and ISOLATED in flags
 
     if grid_info is not None:
         _check_bay_spacing(detections, grid_info, min_bay_mm, max_bay_mm)

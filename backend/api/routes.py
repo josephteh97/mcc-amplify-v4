@@ -20,7 +20,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from api.websocket import manager as ws_manager
-from pipeline import FloorPlanPipeline
+from services.core.orchestrator import PipelineOrchestrator
 from services.corrections_logger import CorrectionsLogger
 from services.job_store import JobStore
 from services.revit_client import RevitClient
@@ -35,7 +35,7 @@ router = APIRouter()
 # Persistent SQLite-backed job store with LRU eviction
 job_store = JobStore(db_path="data/jobs.db", max_jobs=100)
 
-pipeline          = FloorPlanPipeline()
+orchestrator      = PipelineOrchestrator()
 revit_client      = RevitClient()
 corrections_log   = CorrectionsLogger()
 
@@ -114,7 +114,13 @@ async def _run_pipeline_task_inner(job_id: str, file_path: str, project_name: Op
     job = job_store.get(job_id) or {}
     pdf_filename = job.get("filename", "")
     try:
-        result = await pipeline.process(file_path, job_id, project_name, pdf_filename=pdf_filename, progress_callback=on_progress)
+        result = await orchestrator.run_pipeline(
+            file_path,
+            job_id,
+            project_name or "Project",
+            pdf_filename=pdf_filename,
+            progress_callback=on_progress,
+        )
         job_store.update(job_id, {"status": "completed", "progress": 100, "result": result})
         await ws_manager.send_progress(job_id, {
             "type":     "completed",
@@ -226,6 +232,17 @@ _ALLOWED_ELEMENT_TYPES = {"walls", "doors", "windows", "columns", "floors", "cei
 _BLOCKED_FIELDS        = {"id", "level", "top_level", "host_wall_id",
                            "location", "start_point", "end_point", "boundary_points"}
 
+# Per-element-type PATCH schema — must mirror frontend/src/components/EditPanel.jsx
+# FIELD_DEFS. Changing this list is a breaking change for the edit UI.
+_PATCH_FIELD_SCHEMA: dict[str, set[str]] = {
+    "walls":    {"thickness", "height", "material", "is_structural"},
+    "columns":  {"width", "depth", "height", "shape", "material"},
+    "doors":    {"width", "height", "type_name"},
+    "windows":  {"width", "height", "type_name"},
+    "floors":   {"thickness"},
+    "ceilings": {"thickness"},
+}
+
 
 @router.get("/model/{job_id}/recipe")
 async def get_recipe(job_id: str):
@@ -257,6 +274,24 @@ async def patch_recipe(job_id: str, patch: RecipePatch):
     if patch.element_type not in _ALLOWED_ELEMENT_TYPES:
         raise HTTPException(400, f"Unknown element_type: {patch.element_type!r}")
 
+    # Schema validation — reject unknown / blocked fields up-front so the
+    # frontend gets a clear error instead of silent drops.
+    if not patch.delete:
+        allowed = _PATCH_FIELD_SCHEMA.get(patch.element_type, set())
+        unknown = [k for k in patch.changes if k not in allowed]
+        blocked = [k for k in patch.changes if k in _BLOCKED_FIELDS]
+        if unknown:
+            raise HTTPException(
+                400,
+                f"Unknown field(s) for {patch.element_type}: {unknown}. "
+                f"Allowed: {sorted(allowed)}",
+            )
+        if blocked:
+            raise HTTPException(
+                400,
+                f"Protected field(s) cannot be patched: {blocked}",
+            )
+
     tx = Path(f"data/models/rvt/{job_id}_transaction.json")
     if not tx.exists():
         raise HTTPException(404, "Recipe not found on disk")
@@ -276,8 +311,7 @@ async def patch_recipe(job_id: str, patch: RecipePatch):
         elems.pop(patch.element_index)
     else:
         for k, v in patch.changes.items():
-            if k not in _BLOCKED_FIELDS:
-                elems[patch.element_index][k] = v
+            elems[patch.element_index][k] = v
 
     recipe[patch.element_type] = elems
     with open(tx, "w") as f:
@@ -297,11 +331,18 @@ async def patch_recipe(job_id: str, patch: RecipePatch):
         )
 
     try:
-        await pipeline.orchestrator.rebuild_gltf(job_id)
+        await orchestrator.rebuild_gltf(job_id)
     except Exception as e:
         raise HTTPException(500, f"glTF rebuild failed: {e}")
 
-    return {"status": "ok", "job_id": job_id, "message": "Recipe patched and glTF rebuilt"}
+    # Return the patched recipe so the frontend can update state without a
+    # follow-up GET round-trip.
+    return {
+        "status":  "ok",
+        "job_id":  job_id,
+        "message": "Recipe patched and glTF rebuilt",
+        "recipe":  recipe,
+    }
 
 
 @router.post("/rebuild/{job_id}")
@@ -325,7 +366,7 @@ async def _run_rebuild_task(job_id: str):
     try:
         job = job_store.get(job_id) or {}
         pdf_filename = job.get("filename", "")
-        rvt_path = await pipeline.orchestrator.rebuild_rvt(job_id, pdf_filename)
+        rvt_path = await orchestrator.rebuild_rvt(job_id, pdf_filename)
         job_store.update(job_id, {
             "status":   "completed",
             "progress": 100,
@@ -482,6 +523,13 @@ _DEFAULT_PROFILE = {
     "floor_to_floor_height_mm":  3000.0,
     "typical_door_width_mm":     900.0,
     "typical_sill_height_mm":    900.0,
+    # Revit commit confidence gate — warn user before sending a risky model.
+    # gate_block_on_fallback_grid : block on fallback grid detection
+    # gate_block_on_scanned_pdf   : block when PDF appears to be scanned
+    # gate_low_conf_threshold     : fraction of low-confidence elements that triggers a warning
+    "gate_block_on_fallback_grid": True,
+    "gate_block_on_scanned_pdf":   True,
+    "gate_low_conf_threshold":     0.30,
 }
 
 
@@ -502,6 +550,10 @@ class ProjectProfileModel(BaseModel):
     floor_to_floor_height_mm:  float = 3000.0
     typical_door_width_mm:     float = 900.0
     typical_sill_height_mm:    float = 900.0
+    # Revit commit confidence gate
+    gate_block_on_fallback_grid: bool  = True
+    gate_block_on_scanned_pdf:   bool  = True
+    gate_low_conf_threshold:     float = 0.30
 
 
 @router.post("/project_profile")

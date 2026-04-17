@@ -44,9 +44,12 @@ from backend.services.vision_comparator import VisionComparator
 
 # ── Intelligence layer ────────────────────────────────────────────────────────
 from backend.services.intelligence.type_resolver import resolve_types
-from backend.services.intelligence.cross_element_validator import validate_elements
+from backend.services.intelligence.cross_element_validator import validate_elements, OFF_GRID
 from backend.services.intelligence.validation_agent import enforce_rules
 from backend.services.intelligence.bim_translator_enricher import enrich_recipe
+
+# ── Observer (fire-and-forget event bus for chat agent) ──────────────────────
+from backend.chat_agent.pipeline_observer import observer
 
 
 class PipelineOrchestrator:
@@ -92,19 +95,38 @@ class PipelineOrchestrator:
             if progress_callback:
                 progress_callback(pct, msg)
 
+        def emit(coro):
+            """Fire-and-forget observer emission — never blocks the pipeline."""
+            asyncio.create_task(coro)
+
         logger.info(f"🚀 Starting Hybrid Pipeline — Job {job_id}")
         monitor = ResourceMonitor()
         monitor.start()
 
         try:
             # ── Stage 1: Security Check ────────────────────────────────────────
+            emit(observer.stage_started(job_id, 1, "Security & size check"))
             progress(5, "Security & size check…")
             secure_context = await self.security.safe_render(pdf_path)
             safe_dpi = secure_context.get("dpi", 150)
+            emit(observer.stage_completed(job_id, 1, {"dpi": safe_dpi, "method": secure_context.get("method")}))
 
-            # ── Stage 2a: Track A — Vector extraction ─────────────────────────
-            progress(15, "Track A: extracting vector geometry…")
-            vector_data = self.vector_processor.extract(pdf_path)
+            # ── Stage 2: Dual-track PDF extraction (parallel) ─────────────────
+            # Track A (vector geometry), multi-page schedule text scan, and
+            # Track B (300 DPI raster render) are all I/O-bound PDF reads
+            # that don't depend on each other.  Run them concurrently via
+            # asyncio.gather to cut PDF extraction wall-time roughly in half
+            # on multi-page drawing sets.  300 DPI keeps 800 mm columns at
+            # 1:400 at ~24 px — the scale YOLO was trained on; the renderer's
+            # MAX_PIXELS cap auto-reduces DPI for A0 sheets (~127 DPI) and
+            # run_yolo handles that by upsampling.
+            emit(observer.stage_started(job_id, 2, "Dual-track extraction (vector + raster)"))
+            progress(15, "Dual-track: vector + schedule scan + raster render…")
+            vector_data, extra_pages, image_data = await asyncio.gather(
+                asyncio.to_thread(self.vector_processor.extract, pdf_path),
+                asyncio.to_thread(self.vector_processor.extract_all_pages_text, pdf_path),
+                self.stream_processor.render_safe(pdf_path, dpi=300),
+            )
 
             # ── Scanned PDF check ─────────────────────────────────────────────
             # A PDF with fewer than 50 vector paths is almost certainly a scanned
@@ -117,14 +139,13 @@ class PipelineOrchestrator:
                     f"Scanned/raster PDF detected ({path_count} vector paths). "
                     "Grid detection will use fallback coordinates — accuracy reduced."
                 )
+                emit(observer.warn(job_id, "scanned_pdf", {"vector_path_count": path_count}))
 
-            # ── Stage 2a (supplement): Multi-page schedule scan ───────────────
+            # ── Multi-page schedule merge ─────────────────────────────────────
             # Structural drawing sets often put the column schedule on a
-            # separate page.  Scan all pages now so Pass 1 of the column
-            # annotation step can use type-mark → dimension entries from
-            # those schedule pages, even though the floor plan is on page 0.
-            progress(20, "Scanning all PDF pages for column schedules…")
-            extra_pages      = self.vector_processor.extract_all_pages_text(pdf_path)
+            # separate page.  Pass 1 of the column annotation step uses the
+            # type-mark → dimension entries harvested above so it still works
+            # even when the floor plan is on page 0.
             schedule_page_texts = [
                 item["text"]
                 for page in extra_pages if page["is_schedule"]
@@ -137,15 +158,14 @@ class PipelineOrchestrator:
                     f"from {n_sched} schedule page(s) merged into annotation pass."
                 )
 
-            # ── Stage 2b: Track B — Raster rendering ──────────────────────────
-            # Request 300 DPI so 800 mm columns at 1:400 appear as ~24 px —
-            # the same scale the YOLO model was trained on.  The renderer's
-            # MAX_PIXELS cap will reduce DPI automatically for very large sheets
-            # (A0 caps at ~127 DPI); run_yolo handles that by upsampling.
-            progress(25, "Track B: raster rendering…")
-            image_data = await self.stream_processor.render_safe(pdf_path, dpi=300)
+            emit(observer.stage_completed(job_id, 2, {
+                "vector_paths": path_count,
+                "schedule_pages": sum(1 for p in extra_pages if p["is_schedule"]),
+                "is_scanned": is_scanned,
+            }))
 
-            # ── Stage 2c: YOLO element detection on rendered image ─────────────
+            # ── Stage 3: YOLO element detection on rendered image ─────────────
+            emit(observer.stage_started(job_id, 3, "YOLO element detection"))
             progress(35, "Detecting elements (YOLO)…")
             ml_detections = run_yolo(self.yolo, image_data)
 
@@ -153,7 +173,17 @@ class PipelineOrchestrator:
             self._save_job_checkpoint(job_id, "render.jpg", image_data["image"])
             self._save_job_checkpoint(job_id, "px_detections.json", ml_detections)
 
+            # Report detection counts by type for the chat agent
+            _det_counts: dict[str, int] = {}
+            for _d in ml_detections:
+                _t = _d.get("type", "unknown")
+                _det_counts[_t] = _det_counts.get(_t, 0) + 1
+            for _t, _n in _det_counts.items():
+                emit(observer.element_detected(job_id, _t, _n))
+            emit(observer.stage_completed(job_id, 3, {"yolo_total": len(ml_detections), "by_type": _det_counts}))
+
             # ── Stage 3: Hybrid Fusion ─────────────────────────────────────────
+            emit(observer.stage_started(job_id, 4, "Hybrid fusion (vector + ML)"))
             progress(45, "Fusing vector & ML detections…")
             fused_data = await self.fusion.fuse(
                 vector_data,
@@ -167,12 +197,19 @@ class PipelineOrchestrator:
             # Use refined pixel-space detections if fusion produced them;
             # fall back to raw YOLO detections if fusion returned nothing useful.
             refined_detections = fused_data.get("refined_px") or ml_detections
+            emit(observer.stage_completed(job_id, 4, {"refined_count": len(refined_detections)}))
 
             # ── Stage 4: Grid Detection ────────────────────────────────────────
             # We derive the real-world coordinate system from structural grid
             # lines and their dimension annotations — never from scale text.
+            emit(observer.stage_started(job_id, 5, "Grid detection"))
             progress(55, "Detecting structural grid lines…")
             grid_info = self._detect_grid(vector_data, image_data)
+            if grid_info.get("source") in ("fallback", "uniform_fallback"):
+                emit(observer.warn(job_id, "fallback_grid", {
+                    "source": grid_info.get("source"),
+                    "confidence": grid_info.get("grid_confidence", 0.0),
+                }))
 
             # ── Stage 4b: Align grid pixel reference to YOLO column centres ──────
             # The structural grid datum (mm spacings) comes from vector-detected
@@ -193,8 +230,15 @@ class PipelineOrchestrator:
                     f"({len(grid_info.get('x_lines_px',[]))} V × "
                     f"{len(grid_info.get('y_lines_px',[]))} H lines kept from PDF)."
                 )
+            emit(observer.stage_completed(job_id, 5, {
+                "grid_source": grid_info.get("source"),
+                "x_lines": len(grid_info.get("x_lines_px", [])),
+                "y_lines": len(grid_info.get("y_lines_px", [])),
+                "confidence": grid_info.get("grid_confidence", 0.0),
+            }))
 
             # ── Stage 4c: Intelligence middleware (post-detection, pre-geometry) ──
+            emit(observer.stage_started(job_id, 6, "Intelligence middleware"))
             progress(58, "Intelligence layer: type resolution & validation…")
             _column_dets = []
             if column_raw and image_data.get("image") is not None:
@@ -212,9 +256,42 @@ class PipelineOrchestrator:
                     max_bay_mm=float(os.getenv("MAX_BAY_MM", "12000")),
                 )
 
+            # ── Off-grid column deletion (Validation Agent enforcement) ─────
+            # A column whose pixel centre is farther than max_grid_dist_px from
+            # every grid line is almost certainly a YOLO false positive.  User
+            # directive: "Place wrongly is worse than missing one column."
+            # We delete rather than flag.  The dict identity is shared between
+            # _column_dets and refined_detections (resolve_types mutates in
+            # place), so the off_grid flag is already visible on both.
+            if _column_dets:
+                before = len(refined_detections)
+                refined_detections = [
+                    d for d in refined_detections
+                    if not (
+                        d.get("type") == "column"
+                        and OFF_GRID in d.get("validation_flags", [])
+                    )
+                ]
+                _column_dets = [
+                    d for d in _column_dets
+                    if OFF_GRID not in d.get("validation_flags", [])
+                ]
+                deleted = before - len(refined_detections)
+                if deleted:
+                    logger.warning(
+                        f"🗑️  Deleted {deleted} off-grid column(s) — "
+                        "Validation Agent rejected (columns cannot be outside the grid)."
+                    )
+                    emit(observer.warn(job_id, "off_grid_columns_deleted", {"count": deleted}))
+            emit(observer.stage_completed(job_id, 6, {
+                "column_dets_kept": len(_column_dets),
+                "dfma_violations": sum(1 for d in _column_dets if not d.get("is_dfma_compliant", True)),
+            }))
+
             # ── Stage 5: Semantic AI Analysis ─────────────────────────────────
             # Build structured element dict from pixel-space detections
             # so the geometry generator can snap them to the grid.
+            emit(observer.stage_started(job_id, 7, "Semantic AI analysis"))
             progress(60, "AI semantic analysis…")
             structured_elements = self._format_for_geometry(refined_detections)
 
@@ -235,10 +312,12 @@ class PipelineOrchestrator:
             )
             # ── Checkpoint: save enriched data for debugging / re-runs ──────────
             self._save_job_checkpoint(job_id, "enriched.json", enriched_data)
+            emit(observer.stage_completed(job_id, 7, {"enriched_elements": len(enriched_data) if hasattr(enriched_data, "__len__") else None}))
 
             # ── Stage 6: 3D Geometry Generation ───────────────────────────────
             # Apply project profile defaults before generating geometry so that
             # user-configured wall heights, storey heights, etc. are respected.
+            emit(observer.stage_started(job_id, 8, "3D geometry generation"))
             progress(75, "Generating 3D geometry…")
             _profile_path = Path("data/project_profile.json")
             if _profile_path.exists():
@@ -258,8 +337,21 @@ class PipelineOrchestrator:
 
             # ── Pre-clash validation ───────────────────────────────────────────
             validation_warnings = self._validate_recipe(recipe)
+            if validation_warnings:
+                emit(observer.warn(job_id, "pre_clash_validation", {
+                    "count": len(validation_warnings),
+                    "warnings": validation_warnings[:10],  # cap payload size
+                }))
+            emit(observer.stage_completed(job_id, 8, {
+                "columns": len(recipe.get("columns", [])),
+                "walls": len(recipe.get("walls", [])),
+                "doors": len(recipe.get("doors", [])),
+                "windows": len(recipe.get("windows", [])),
+                "pre_clash_warnings": len(validation_warnings),
+            }))
 
             # ── Stage 7: BIM Export ────────────────────────────────────────────
+            emit(observer.stage_started(job_id, 9, "BIM export (RVT + glTF)"))
             progress(88, "Exporting RVT & glTF…")
             transaction_path = f"data/models/rvt/{job_id}_transaction.json"
             Path(transaction_path).parent.mkdir(parents=True, exist_ok=True)
@@ -278,10 +370,14 @@ class PipelineOrchestrator:
             #   default → Batch build_model call (original path, unchanged)
             rvt_path    = None
             vision_diff = None
+            # rvt_status: "success" | "warnings_accepted" | "skipped" | "failed"
+            rvt_status  = "skipped"
+            rvt_warnings_final: list = []
             _use_agent  = os.getenv("USE_AGENT_BUILDER", "").lower() == "true"
             try:
                 if _use_agent:
                     rvt_path, vision_diff = await self._run_agent_export(recipe, job_id, progress, pdf_filename)
+                    rvt_status = "success" if rvt_path else "failed"
                 else:
                     current_recipe = recipe
                     for _attempt in range(3):          # attempt 0, 1, 2
@@ -295,12 +391,20 @@ class PipelineOrchestrator:
                                     f"Revit warnings remain after {_attempt + 1} correction "
                                     f"attempt(s) — accepted as-is: {revit_warnings}"
                                 )
+                                rvt_warnings_final = revit_warnings
+                                rvt_status = "warnings_accepted"
+                                emit(observer.warn(job_id, "revit_warnings", {
+                                    "attempts": _attempt + 1,
+                                    "warnings": revit_warnings,
+                                }))
+                            else:
+                                rvt_status = "success"
                             break
 
                         # Ask the AI what to change
                         progress(
                             90 + _attempt * 3,
-                            f"Revit warnings — AI correcting (round {_attempt + 1}/2)…",
+                            f"Revit warnings — AI correcting (round {_attempt + 1}/3)…",
                         )
                         corrections = await self.semantic_ai.analyze_revit_warnings(
                             revit_warnings, current_recipe
@@ -310,6 +414,13 @@ class PipelineOrchestrator:
                                 "AI found no actionable corrections for Revit warnings "
                                 f"— proceeding with current RVT: {revit_warnings}"
                             )
+                            rvt_warnings_final = revit_warnings
+                            rvt_status = "warnings_accepted"
+                            emit(observer.warn(job_id, "revit_warnings", {
+                                "attempts": _attempt + 1,
+                                "warnings": revit_warnings,
+                                "ai_corrections": "none_actionable",
+                            }))
                             break
 
                         logger.info(
@@ -329,17 +440,29 @@ class PipelineOrchestrator:
                     f"RVT export skipped — {type(rvt_err).__name__}: {rvt_err}\n"
                     f"{traceback.format_exc()}"
                 )
+                rvt_status = "failed"
+                emit(observer.warn(job_id, "rvt_export_failed", {
+                    "error_type": type(rvt_err).__name__,
+                    "message": str(rvt_err),
+                }))
+
+            emit(observer.stage_completed(job_id, 9, {
+                "gltf": gltf_out,
+                "rvt": rvt_path,
+                "rvt_status": rvt_status,
+            }))
 
             progress(100, "Complete!")
             logger.info(
-                f"✅ Pipeline complete — glTF: {gltf_out} | RVT: {rvt_path or 'skipped'}"
+                f"✅ Pipeline complete — glTF: {gltf_out} | RVT: {rvt_path or 'skipped'} ({rvt_status})"
             )
 
-            return {
-                "job_id":  job_id,
-                "status":  "completed",
-                "files":   {"rvt": rvt_path, "gltf": gltf_out},
-                "stats":   {
+            result = {
+                "job_id":     job_id,
+                "status":     "completed",
+                "files":      {"rvt": rvt_path, "gltf": gltf_out},
+                "rvt_status": rvt_status,
+                "stats":      {
                     "method":                secure_context.get("method"),
                     "dpi":                   safe_dpi,
                     "element_count":         len(refined_detections),
@@ -354,8 +477,11 @@ class PipelineOrchestrator:
                     "intelligence_flagged":  sum(1 for d in _column_dets if not d.get("is_valid", True)) if _column_dets else 0,
                     "validation_warnings":   validation_warnings,
                     "vision_diff":           vision_diff,
+                    "rvt_warnings":          rvt_warnings_final,
                 },
             }
+            emit(observer.job_completed(job_id, result))
+            return result
 
         except Exception as e:
             import traceback
@@ -363,6 +489,7 @@ class PipelineOrchestrator:
                 f"Pipeline failed: {type(e).__name__}: {e}\n"
                 + traceback.format_exc()
             )
+            emit(observer.error(job_id, type(e).__name__, {"message": str(e)}))
             raise
         finally:
             monitor.stop()

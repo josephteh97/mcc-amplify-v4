@@ -8,10 +8,19 @@ const UploadPanel = ({ onJobCreated, onProcessingComplete }) => {
   const fileInputRef = useRef(null);
   const pollIntervalRef = useRef(null);
   const wsRef = useRef(null);
+  const wsOpenTimerRef = useRef(null);
 
-  // Clean up WebSocket and polling on unmount
+  const clearOpenTimer = () => {
+    if (wsOpenTimerRef.current) {
+      clearTimeout(wsOpenTimerRef.current);
+      wsOpenTimerRef.current = null;
+    }
+  };
+
+  // Clean up WebSocket, polling, and open-timer on unmount
   useEffect(() => {
     return () => {
+      clearOpenTimer();
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -125,12 +134,15 @@ const UploadPanel = ({ onJobCreated, onProcessingComplete }) => {
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws/${jobId}`);
     wsRef.current = ws;
 
+    // Safety net: if the WS hasn't opened within 3 s, fall back to polling.
+    // Cleared in onopen. This avoids racing poll + WS from the start.
+    clearOpenTimer();
+    wsOpenTimerRef.current = setTimeout(() => {
+      if (ws.readyState !== WebSocket.OPEN) startPollingFallback(jobId);
+    }, 3000);
+
     ws.onopen = () => {
-      // WebSocket connected — no need for polling fallback
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-        pollIntervalRef.current = null;
-      }
+      clearOpenTimer();
     };
 
     ws.onmessage = (event) => {
@@ -145,11 +157,13 @@ const UploadPanel = ({ onJobCreated, onProcessingComplete }) => {
           setProgress(100);
           setStatus('completed');
           onProcessingComplete(jobId, data.result, file?.name);
+          clearOpenTimer();
           ws.close();
           wsRef.current = null;
         } else if (data.type === 'failed') {
           setStatus('error');
           setError(data.message || 'Pipeline processing failed.');
+          clearOpenTimer();
           ws.close();
           wsRef.current = null;
         }
@@ -157,22 +171,21 @@ const UploadPanel = ({ onJobCreated, onProcessingComplete }) => {
     };
 
     ws.onerror = () => {
-      // WebSocket failed — fall back to polling
+      clearOpenTimer();
       wsRef.current = null;
       startPollingFallback(jobId);
     };
 
-    ws.onclose = (event) => {
-      // If the socket closed unexpectedly (not by us after completion/failure), fall back
+    ws.onclose = () => {
+      clearOpenTimer();
+      // If the socket closed before we intentionally nulled wsRef, fall back.
+      // (We null wsRef ourselves on completion/failure above, so this only
+      // fires on unexpected disconnects.)
       if (wsRef.current === ws) {
         wsRef.current = null;
         startPollingFallback(jobId);
       }
     };
-
-    // Start polling as a safety net in case WebSocket never connects
-    // The polling will be cleared once onopen fires
-    startPollingFallback(jobId);
   };
 
   const isProcessing = status === 'uploading' || status === 'processing';

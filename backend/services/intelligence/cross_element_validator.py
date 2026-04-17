@@ -19,6 +19,12 @@ from itertools import combinations
 import numpy as np
 from loguru import logger
 
+# Validation flag names — exported so downstream code (orchestrator's off-grid
+# deletion pass) doesn't duplicate these literals.
+OFF_GRID      = "off_grid"
+ISOLATED      = "isolated"
+IOU_OVERLAP   = "iou_overlap"
+
 
 def validate_elements(
     detections: list[dict],
@@ -65,8 +71,8 @@ def _check_iou_overlaps(detections: list[dict], threshold: float) -> None:
     for i, j in combinations(range(len(detections)), 2):
         if _iou(detections[i]["bbox"], detections[j]["bbox"]) > threshold:
             for idx in (i, j):
-                if "iou_overlap" not in detections[idx]["validation_flags"]:
-                    detections[idx]["validation_flags"].append("iou_overlap")
+                if IOU_OVERLAP not in detections[idx]["validation_flags"]:
+                    detections[idx]["validation_flags"].append(IOU_OVERLAP)
 
 
 def _check_grid_distance(
@@ -82,7 +88,7 @@ def _check_grid_distance(
         dx = min(abs(cx - xl) for xl in x_lines) if x_lines else 0.0
         dy = min(abs(cy - yl) for yl in y_lines) if y_lines else 0.0
         if dx > max_dist_px and dy > max_dist_px:
-            det["validation_flags"].append("off_grid")
+            det["validation_flags"].append(OFF_GRID)
 
 
 def _check_isolation(detections: list[dict], radius_px: float) -> None:
@@ -94,4 +100,4 @@ def _check_isolation(detections: list[dict], radius_px: float) -> None:
         dists = np.linalg.norm(centers - centers[i], axis=1)
         dists[i] = np.inf
         if dists.min() > radius_px:
-            det["validation_flags"].append("isolated")
+            det["validation_flags"].append(ISOLATED)

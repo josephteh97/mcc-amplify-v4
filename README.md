@@ -64,7 +64,7 @@ flowchart TD
 
     SEC --> VEC & RAS
 
-    subgraph PAR["Stage 2 - Parallel Tracks"]
+    subgraph PAR["Stage 2 - Dual Tracks (run sequentially)"]
         VEC["Track A - Vector Extraction
         VectorProcessor
         PyMuPDF paths + text spans
@@ -140,7 +140,7 @@ flowchart TD
         Builds levels, grids, walls
         columns, doors, windows, slabs"]
         EXP --> WRN{"Revit warnings?"}
-        WRN -->|"yes, attempt <= 2"| FIX["AI correction round
+        WRN -->|"yes, attempt < 3"| FIX["AI correction round
         SemanticAnalyzer patches recipe"]
         FIX -->|resend| EXP
         WRN -->|"no / accepted"| RVT[".rvt file"]
@@ -213,8 +213,6 @@ mcc-amplify-v4/
 |   |-- api/
 |   |   |-- routes.py                   <- REST endpoints (upload, process, download)
 |   |   └-- websocket.py               <- Real-time progress updates
-|   |-- pipeline/
-|   |   └-- pipeline.py                <- Thin wrapper around PipelineOrchestrator
 |   |-- agents/
 |   |   └-- revit_agent.py             <- Claude MCP agent for step-by-step Revit placement
 |   |-- chat_agent/
@@ -253,12 +251,16 @@ mcc-amplify-v4/
 |       |-- file_handler.py            <- Upload file handling
 |       └-- logger.py                  <- Loguru setup
 |
-|-- revit_server/
-|   └-- RevitAddin/                    <- C# Revit 2023 Add-in (build on Windows)
-|       |-- App.cs                     <- TcpListener :5000 + ExternalEvent handler
-|       |-- ModelBuilder.cs            <- Creates levels, grids, walls, columns, etc.
-|       |-- RevitModelBuilder.addin    <- Revit add-in manifest
-|       └-- RevitAddin.csproj
+|-- revit_server/                      <- Windows-side Revit integration (C#)
+|   |-- RevitAddin/                    <- C# Revit 2023 Add-in (build on Windows)
+|   |   |-- App.cs                     <- TcpListener :5000 + ExternalEvent handler
+|   |   |-- RevitModelBuilder.addin    <- Revit add-in manifest
+|   |   |-- RevitModelBuilder.csproj
+|   |   └-- build_and_deploy.bat       <- Build + copy add-in into %APPDATA%\Autodesk\Revit\Addins
+|   |-- RevitMacro/                    <- Alternative macro-based runner (legacy)
+|   |-- RevitService/                  <- Standalone Windows service variant
+|   |-- csharp_service/                <- C# service shim
+|   └-- python_service/                <- Python bridge helper
 |
 |-- frontend/                          <- React + Three.js web UI
 |   └-- src/
@@ -431,7 +433,7 @@ flowchart TD
 Key behaviours:
 - **No popup dialogs** -- `IFailuresPreprocessor.PreprocessFailures()` calls `fa.DeleteWarning(msg)` on every warning, so Revit never shows the dialog.
 - **Fatal errors** still cause transaction rollback and return a 500 from the C# server.
-- **Max 2 correction rounds** -- prevents infinite loops; after round 2, whatever Revit built is accepted.
+- **Max 3 export attempts** -- the loop is `for _attempt in range(3)` (attempts 0, 1, 2). After the 3rd build, whatever Revit produced is accepted as-is and any remaining warnings are surfaced on the `rvt_status` field.
 - **Safety guardrails** -- `_apply_revit_corrections()` only patches whitelisted numeric fields (width, depth, height, thickness, etc.) so the AI cannot corrupt structural keys like level or id.
 
 ---

@@ -2,6 +2,19 @@
 """
 Revit BIM MCP Server (P3)
 =========================
+Standalone stdio MCP server — **NOT part of the FastAPI pipeline.**
+
+This process is spawned by an external MCP client (Claude Desktop, Claude Code,
+or any MCP-compatible host) and speaks the Model Context Protocol over stdin/
+stdout.  It exposes tools for Revit session management + family library lookup
+so an LLM running in that client can drive Revit step-by-step.
+
+The PDF → BIM pipeline (FastAPI backend, `services/core/orchestrator.py`) does
+NOT import or call this server.  The in-pipeline MCP path used by the agent
+builder lives in `agents/revit_agent.py` — that one embeds the MCP client inside
+the orchestrator.  If you're looking for the pipeline's RVT export path, start
+there, not here.
+
 Exposes Revit session management + family library tools via the Model Context
 Protocol (MCP).  This server can be used by Claude Desktop, Claude Code, or
 any MCP-compatible client.
