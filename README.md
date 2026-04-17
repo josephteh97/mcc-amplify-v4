@@ -201,6 +201,10 @@ No middleware, validator, or enricher may alter `cx_mm`, `cy_mm`, or `{x, y, z}`
 mcc-amplify-v4/
 |-- run.sh                              <- Start Ubuntu backend + frontend
 |-- scripts/
+|   |-- setup.sh / setup.bat            <- One-time venv + pip install for the backend (Linux / Windows)
+|   |-- run.sh                          <- Canonical Ubuntu launcher (root run.sh just forwards here)
+|   |-- run.bat                         <- Windows-side: launch Revit 2023 and wait for the add-in on :5000
+|   |-- retrain_yolo.py                 <- YOLO fine-tuning flywheel driven by CorrectionsLogger output
 |   └-- scan_family_library.py          <- Regenerate data/family_library/index.json
 |
 |-- backend/
@@ -227,9 +231,12 @@ mcc-amplify-v4/
 |   |   |-- security/                  <- SecurePDFRenderer, ResourceMonitor
 |   |   |-- fusion/pipeline.py         <- HybridFusionPipeline (vector snapping)
 |   |   |-- grid_detector.py           <- Structural grid detection, pixel->mm conversion
+|   |   |-- yolo_runner.py             <- Tiling inference: CLAHE + 1280 px tiles / 200 px overlap + NMS
+|   |   |-- column_annotator.py        <- 5-pass column annotation parser (schedule, proximity, vision LLM, single-scheme, 800 mm default)
 |   |   |-- semantic_analyzer.py       <- Multi-backend AI (Ollama / Gemini / Claude)
 |   |   |-- geometry_generator.py      <- 2D -> Revit 3D parameter builder
 |   |   |-- revit_client.py            <- HTTP client -> Windows Revit Add-in
+|   |   |-- job_store.py               <- SQLite-backed persistent job status (LRU eviction)
 |   |   |-- intelligence/              <- Post-detection middleware layer
 |   |   |   |-- type_resolver.py       <- Circular/rectangular/L-shape classification
 |   |   |   |-- cross_element_validator.py <- IoU, grid distance, isolation checks
@@ -240,9 +247,7 @@ mcc-amplify-v4/
 |   |   |   └-- gltf_exporter.py       <- Writes .glb (Z-up to Y-up rotation)
 |   |   |-- corrections_logger.py      <- Logs human corrections for YOLO retraining
 |   |   └-- vision_comparator.py       <- Vision-based diff for Revit feedback
-|   |-- ml/
-|   |   └-- weights/
-|   |       └-- column-detect.pt       <- YOLO model weights
+|   |-- ml/weights/                     <- (user-supplied) place column-detect.pt here; see Troubleshooting
 |   └-- utils/
 |       |-- api_keys.py                <- Key resolution (env var -> .txt file)
 |       |-- file_handler.py            <- Upload file handling
@@ -258,11 +263,11 @@ mcc-amplify-v4/
 |-- frontend/                          <- React + Three.js web UI
 |   └-- src/
 |       └-- components/
-|           |-- UploadPanel.jsx        <- PDF upload + processing trigger
+|           |-- Layout.jsx             <- Root layout; wires upload/viewer/chat/edit + human-in-the-loop state
+|           |-- UploadPanel.jsx        <- PDF upload + processing trigger (includes real-time progress bar)
 |           |-- Viewer.jsx             <- 3D glTF viewer (Three.js)
 |           |-- ChatPanel.jsx          <- AI chat assistant
-|           |-- EditPanel.jsx          <- Element editing panel
-|           └-- ProcessingProgress.jsx <- Real-time progress bar
+|           └-- EditPanel.jsx          <- Element editing panel
 |
 |-- data/                              <- Runtime data (created automatically)
 |   |-- uploads/
@@ -274,7 +279,10 @@ mcc-amplify-v4/
 |   └-- revit_families.json            <- Family type definitions
 |
 └-- tests/
-    └-- test_intelligence_middleware.py <- 7 tests for intelligence layer
+    |-- test_column_annotator.py       <- Column annotation parser (synthetic data, no YOLO/AI needed)
+    |-- test_fusion_pipeline.py        <- HybridFusionPipeline coordinate transforms + wall snapping
+    |-- test_intelligence_middleware.py <- Intelligence layer (type resolver, validator, DfMA rules)
+    └-- test_job_store.py              <- SQLite job store
 ```
 
 ---

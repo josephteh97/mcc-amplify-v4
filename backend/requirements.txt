@@ -1,5 +1,10 @@
-# requirements.txt (merged & cleaned – February 2026)
-# Removed: ifcopenshell, ezdxf (no IFC/DXF needed)
+# requirements.txt (merged & cleaned – April 2026)
+# Previously removed: ifcopenshell, ezdxf (no IFC/DXF needed)
+# Removed this pass (dead code audit): pytesseract, paddleocr (OCR replaced by
+# vision LLMs), pdf2image, PyPDF2, camelot-py (PyMuPDF covers all PDF work),
+# open3d (trimesh + pygltflib suffice), sqlalchemy, alembic, psycopg2-binary
+# (no ORM / Postgres; job_store uses sqlite3 stdlib), aiohttp (only httpx +
+# requests are used).
 
 # PyTorch CUDA builds are not on PyPI — must come from the PyTorch wheel index.
 --extra-index-url https://download.pytorch.org/whl/cu128
@@ -26,39 +31,25 @@ torchvision==0.25.0+cu128       # Computer vision utilities
 # ----------------
 opencv-python>=4.11.0.86   # Image processing
 Pillow==10.1.0            # → Pillow (capitalized consistently)
-pytesseract==0.3.10       # OCR for scale detection
-paddleocr==3.4.0        # Alternative OCR (better for Asian text)
 
 # ----------------
 # PDF Processing
 # ----------------
 PyMuPDF==1.23.7           # PDF to image / fitz
-pdf2image==1.16.3         # PDF rasterization
-PyPDF2==3.0.1             # PDF text extraction
-camelot-py[cv]==0.11.0    # Table / vector extraction from PDF
 
 # ----------------
 # 3D Processing & Geometry
 # ----------------
 numpy==1.26.2             # Numerical computations
-open3d==0.18.0            # 3D geometry processing
-trimesh==4.0.5            # Mesh operations
+trimesh==4.0.5            # Mesh operations (used by gltf_exporter)
 scipy==1.11.4             # Scientific computing
 pygltflib==1.16.1         # glTF export for web viewer
-
-# ----------------
-# Database
-# ----------------
-sqlalchemy==2.0.23
-alembic==1.12.1
-psycopg2-binary==2.9.9    # PostgreSQL driver
 
 # ----------------
 # HTTP & Networking
 # ----------------
 requests>=2.32.3          # Sync HTTP (Revit server, etc.); >=2.32.3 required for urllib3 2.x + chardet 7.x compat
 httpx>=0.28.1             # Async HTTP client
-aiohttp==3.9.1            # Alternative async HTTP
 
 # ----------------
 # Data Validation
