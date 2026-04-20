@@ -62,6 +62,11 @@
 //   POST /session/{id}/close
 //       → { ok, message }
 //
+//   POST /session/{id}/query-elements
+//       body: { "element_ids": [int]?, "category": string? }   // either filter; both optional → all
+//       → { elements: [ { id, category, family, type, bbox: { min, max }, location } ] }
+//         Distances in millimetres.  Used by the self-healing agent's clash resolver.
+//
 // Session lifecycle
 // -----------------
 //   new-session → load-family* → place* → set-param* → export → (auto-close)
@@ -126,7 +131,13 @@ namespace RevitModelBuilderAddin
         private CancellationTokenSource _cts;
 
         // ── Warning capture (batch build) ─────────────────────────────────────
+        // _sessionWarnings holds the warning text for legacy v1 callers.
+        // _sessionWarningDetails holds the same warnings plus the Revit element
+        // IDs they reference, which the Phase 2 self-healing agent uses to
+        // target corrections at specific elements.  Order matches _sessionWarnings.
         private readonly List<string> _sessionWarnings = new List<string>();
+        private readonly List<(string Text, List<int> ElementIds)> _sessionWarningDetails
+            = new List<(string, List<int>)>();
         private readonly object       _warningsLock    = new object();
 
         private const int PORT = 5000;
@@ -205,7 +216,13 @@ namespace RevitModelBuilderAddin
                     string text = msg.GetDescriptionText();
                     if (!string.IsNullOrWhiteSpace(text))
                     {
-                        lock (_warningsLock) { _sessionWarnings.Add(text); }
+                        var elemIds = msg.GetFailingElementIds()
+                                         .Select(id => id.IntegerValue).ToList();
+                        lock (_warningsLock)
+                        {
+                            _sessionWarnings.Add(text);
+                            _sessionWarningDetails.Add((text, elemIds));
+                        }
                         Console.WriteLine($"[RevitWarning] {text}");
                     }
 
@@ -292,15 +309,16 @@ namespace RevitModelBuilderAddin
                     {
                         switch (cmd)
                         {
-                            case "load-family": HandleLoadFamily(stream, sid, body);    break;
-                            case "place":       HandlePlaceInstance(stream, sid, body); break;
-                            case "set-param":   HandleSetParam(stream, sid, body);      break;
-                            case "get-params":  HandleGetParams(stream, sid, body);     break;
-                            case "wall-join":   HandleWallJoinAll(stream, sid);         break;
-                            case "export-view": HandleExportView(stream, sid);          break;
-                            case "export":      HandleExportSession(stream, sid, body); break;
-                            case "close":       HandleCloseSession(stream, sid);        break;
-                            default:            WriteJson(stream, 404, new { error = $"Unknown command: {cmd}" }); break;
+                            case "load-family":    HandleLoadFamily(stream, sid, body);    break;
+                            case "place":          HandlePlaceInstance(stream, sid, body); break;
+                            case "set-param":      HandleSetParam(stream, sid, body);      break;
+                            case "get-params":     HandleGetParams(stream, sid, body);     break;
+                            case "wall-join":      HandleWallJoinAll(stream, sid);         break;
+                            case "export-view":    HandleExportView(stream, sid);          break;
+                            case "export":         HandleExportSession(stream, sid, body); break;
+                            case "close":          HandleCloseSession(stream, sid);        break;
+                            case "query-elements": HandleQueryElements(stream, sid, body); break;
+                            default:               WriteJson(stream, 404, new { error = $"Unknown command: {cmd}" }); break;
                         }
                     }
                     else if (method == "GET" && IsSessionPath(path, out string gSid, out string gCmd))
@@ -354,7 +372,11 @@ namespace RevitModelBuilderAddin
             string rvtName    = RvtFileName(buildReq.PdfFilename, buildReq.JobId);
             string outputPath = Path.Combine(outputDir, rvtName);
 
-            lock (_warningsLock) { _sessionWarnings.Clear(); }
+            lock (_warningsLock)
+            {
+                _sessionWarnings.Clear();
+                _sessionWarningDetails.Clear();
+            }
 
             // If a previous event is still queued (e.g. left by a timed-out request or
             // a Revit dialog that blocked execution), wait up to 20 s for it to clear
@@ -387,12 +409,33 @@ namespace RevitModelBuilderAddin
 
             byte[] rvtBytes = File.ReadAllBytes(outputPath);
 
-            List<string> allWarnings;
-            lock (_warningsLock) { allWarnings = new List<string>(_sessionWarnings); }
-            foreach (var w in _buildHandler.ResultWarnings ?? new List<string>())
-                if (!allWarnings.Contains(w)) allWarnings.Add(w);
+            // Merge warnings from both capture paths, preserving order and
+            // deduplicating by text.  Session-scope details (from
+            // OnFailuresProcessing) come first, then per-build details from
+            // the WarningCollector.  Element IDs follow text through v2.
+            var seen            = new HashSet<string>();
+            var mergedDetails   = new List<(string Text, List<int> ElementIds)>();
+            lock (_warningsLock)
+            {
+                foreach (var d in _sessionWarningDetails)
+                    if (seen.Add(d.Text)) mergedDetails.Add(d);
+            }
+            foreach (var d in _buildHandler.ResultWarningDetails
+                              ?? new List<(string, List<int>)>())
+                if (seen.Add(d.Text)) mergedDetails.Add(d);
 
-            string warningsJson = JsonConvert.SerializeObject(allWarnings);
+            // Extra texts with no detail pair (e.g. [JOIN-RESOLVED:*] entries
+            // that are added to Warnings but not to WarningDetails) — attach
+            // empty element_ids so the v2 payload still includes them.
+            foreach (var w in _buildHandler.ResultWarnings ?? new List<string>())
+                if (seen.Add(w)) mergedDetails.Add((w, new List<int>()));
+
+            var warningsV2 = mergedDetails.Select(d => new {
+                text        = d.Text,
+                element_ids = d.ElementIds ?? new List<int>(),
+            }).ToList();
+
+            string warningsJson = JsonConvert.SerializeObject(warningsV2);
             string familiesJson = JsonConvert.SerializeObject(_buildHandler.ResultFamilies);
 
             string respHeader =
@@ -401,6 +444,7 @@ namespace RevitModelBuilderAddin
                 $"Content-Length: {rvtBytes.Length}\r\n" +
                 $"Content-Disposition: attachment; filename={rvtName}\r\n" +
                 $"X-Revit-Warnings: {warningsJson}\r\n" +
+                $"X-Revit-Warnings-Version: 2\r\n" +
                 $"X-Revit-Families: {familiesJson}\r\n" +
                 $"Connection: close\r\n\r\n";
 
@@ -1207,6 +1251,132 @@ namespace RevitModelBuilderAddin
         }
 
         // =========================================================================
+        // Handler — POST /session/{id}/query-elements
+        // Body: { "element_ids": [int]?, "category": string? }
+        //       element_ids  — specific Revit IDs to fetch (takes precedence over category)
+        //       category     — BuiltInCategory short name ("StructuralColumns") or
+        //                      full name ("OST_StructuralColumns"); filters a collector pass
+        //       both omitted — every element with a valid BoundingBox in the session doc
+        //
+        // Used by the self-healing agent's clash resolver to obtain current
+        // bounding boxes after placement (feet → mm at the C# boundary).
+        // =========================================================================
+
+        private void HandleQueryElements(NetworkStream stream, string sessionId, string body)
+        {
+            var state = _sessions.Get(sessionId);
+            if (state == null) { WriteJson(stream, 404, new { error = "Session not found" }); return; }
+
+            List<int> requestedIds = null;
+            BuiltInCategory? categoryFilter = null;
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(body))
+                {
+                    var req = JObject.Parse(body);
+
+                    var idsTok = req["element_ids"] as JArray;
+                    if (idsTok != null && idsTok.Count > 0)
+                        requestedIds = idsTok.Select(t => t.Value<int>()).ToList();
+
+                    var catTok = req["category"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(catTok))
+                    {
+                        string key = catTok.StartsWith("OST_") ? catTok : "OST_" + catTok;
+                        if (Enum.TryParse(key, out BuiltInCategory parsed))
+                            categoryFilter = parsed;
+                        else
+                            throw new Exception($"Unknown category '{catTok}'.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteJson(stream, 400, new { error = $"Bad request: {ex.Message}" });
+                return;
+            }
+
+            try
+            {
+                var result = (JObject)RunOnRevitThread(uiapp =>
+                {
+                    var doc = state.Document;
+                    IEnumerable<Element> elems;
+
+                    if (requestedIds != null)
+                    {
+                        elems = requestedIds
+                            .Select(i => doc.GetElement(new ElementId(i)))
+                            .Where(e => e != null);
+                    }
+                    else
+                    {
+                        var fec = new FilteredElementCollector(doc).WhereElementIsNotElementType();
+                        if (categoryFilter.HasValue) fec = fec.OfCategory(categoryFilter.Value);
+                        elems = fec.ToElements();
+                    }
+
+                    var arr = new JArray();
+                    foreach (var elem in elems)
+                    {
+                        BoundingBoxXYZ bb;
+                        try { bb = elem.get_BoundingBox(null); } catch { bb = null; }
+                        if (bb == null) continue;       // skip non-geometric elements
+
+                        var sym       = doc.GetElement(elem.GetTypeId()) as ElementType;
+                        string family = sym?.FamilyName ?? "";
+                        string tname  = sym?.Name       ?? "";
+
+                        var obj = new JObject
+                        {
+                            ["id"]       = elem.Id.IntegerValue,
+                            ["category"] = elem.Category?.Name ?? "",
+                            ["family"]   = family,
+                            ["type"]     = tname,
+                            ["bbox"] = new JObject
+                            {
+                                ["min"] = new JObject
+                                {
+                                    ["x"] = Math.Round(bb.Min.X * 304.8, 1),
+                                    ["y"] = Math.Round(bb.Min.Y * 304.8, 1),
+                                    ["z"] = Math.Round(bb.Min.Z * 304.8, 1),
+                                },
+                                ["max"] = new JObject
+                                {
+                                    ["x"] = Math.Round(bb.Max.X * 304.8, 1),
+                                    ["y"] = Math.Round(bb.Max.Y * 304.8, 1),
+                                    ["z"] = Math.Round(bb.Max.Z * 304.8, 1),
+                                },
+                            },
+                        };
+
+                        if (elem.Location is LocationPoint lp)
+                        {
+                            obj["location"] = new JObject
+                            {
+                                ["x"] = Math.Round(lp.Point.X * 304.8, 1),
+                                ["y"] = Math.Round(lp.Point.Y * 304.8, 1),
+                                ["z"] = Math.Round(lp.Point.Z * 304.8, 1),
+                            };
+                        }
+
+                        arr.Add(obj);
+                    }
+
+                    Log($"Session {sessionId}: query-elements → {arr.Count} element(s)");
+                    return new JObject { ["elements"] = arr };
+                });
+
+                WriteJson(stream, 200, result);
+            }
+            catch (Exception ex)
+            {
+                WriteJson(stream, 500, new { error = ex.Message });
+            }
+        }
+
+        // =========================================================================
         // Handler — POST /session/{id}/export
         // Body: { "keep_open": false }
         // =========================================================================
@@ -1697,16 +1867,21 @@ namespace RevitModelBuilderAddin
         public ManualResetEventSlim Done           { get; } = new ManualResetEventSlim(false);
         public Exception            BuildError     { get; private set; }
         public List<string>         ResultWarnings { get; private set; } = new List<string>();
+        // Parallel to ResultWarnings; same order.  Empty ElementIds list when the
+        // warning is not tied to specific elements (e.g. an [JOIN-RESOLVED:*] entry).
+        public List<(string Text, List<int> ElementIds)> ResultWarningDetails { get; private set; }
+            = new List<(string, List<int>)>();
         public Dictionary<string, List<string>> ResultFamilies { get; private set; }
             = new Dictionary<string, List<string>>();
 
         public void Prepare(string transactionJson, string outputPath)
         {
-            _transactionJson = transactionJson;
-            _outputPath      = outputPath;
-            BuildError       = null;
-            ResultWarnings   = new List<string>();
-            ResultFamilies   = new Dictionary<string, List<string>>();
+            _transactionJson     = transactionJson;
+            _outputPath          = outputPath;
+            BuildError           = null;
+            ResultWarnings       = new List<string>();
+            ResultWarningDetails = new List<(string, List<int>)>();
+            ResultFamilies       = new Dictionary<string, List<string>>();
             Done.Reset();
         }
 
@@ -1721,7 +1896,8 @@ namespace RevitModelBuilderAddin
             {
                 var builder = new ModelBuilder(app.Application);
                 builder.BuildModel(_transactionJson, _outputPath, warningCollector);
-                ResultWarnings = warningCollector.Warnings;
+                ResultWarnings       = warningCollector.Warnings;
+                ResultWarningDetails = warningCollector.WarningDetails;
 
                 // Write post-build summary to build log
                 warningCollector.LogSummary("BuildHandler summary");
@@ -1740,8 +1916,9 @@ namespace RevitModelBuilderAddin
             }
             catch (Exception ex)
             {
-                BuildError     = ex;
-                ResultWarnings = warningCollector.Warnings;
+                BuildError           = ex;
+                ResultWarnings       = warningCollector.Warnings;
+                ResultWarningDetails = warningCollector.WarningDetails;
                 Console.WriteLine($"[BuildHandler] Error: {ex}");
             }
             finally { Done.Set(); }
