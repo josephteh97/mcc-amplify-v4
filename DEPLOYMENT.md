@@ -27,23 +27,31 @@ flowchart LR
         direction TB
         FE["React + Three.js\nFrontend :5173"]
         API["FastAPI Backend :8000"]
+        SEC["SecurePDFRenderer\n150 MP pixel budget"]
+        SRC["Source Data (parallel)\nVectorProcessor + StreamingProcessor"]
         AGENTS["7 Parallel Detection Agents\nGrid · Column · Framing · Stairs · Lift · Wall · Slab"]
-        INT["Intelligence Middleware\nType Resolver → Validator → DfMA + Join-Conflict"]
+        MERGE["Detection Merger\nHybridFusionPipeline + grid pixel alignment"]
+        INT["Intelligence Middleware\nTypeResolver → CrossElementValidator → ValidationAgent\nDfMA SS CP 65 · beam-column join-conflict"]
         SEM["Semantic AI (Ollama)\naisingapore/Gemma-SEA-LION-v4-4B-VL"]
-        GEO["Geometry Generator"]
-        BTE["BIM Translator Enricher"]
-        EXP["RVT Exporter + glTF Exporter"]
+        GEO["Geometry Generator\n_px_to_world → _snap_to_nearest_grid"]
+        BTE["BIM Enricher + Dedup\n(0.1 mm grid rounding)"]
+        RVTEXP["RVT Exporter (RevitClient)"]
+        GLTEXP["glTF Exporter"]
+        CHAT["Chat Agent (Ollama)\nqwen3-vl:2b / gemma3:4b-it-qat"]
 
-        FE --> API --> AGENTS
-        AGENTS --> INT --> SEM --> GEO --> BTE --> EXP
+        FE --> API
+        API --> SEC --> SRC --> AGENTS --> MERGE --> INT --> SEM --> GEO --> BTE
+        BTE --> RVTEXP
+        BTE --> GLTEXP
+        API -.-> CHAT
     end
 
     subgraph WIN["Windows"]
-        REVIT["Revit 2023\nC# Add-in\nTcpListener :5000"]
+        REVIT["Revit 2023\nC# Add-in (TcpListener :5000)\nWarningCollector auto-resolves join errors"]
     end
 
-    EXP -->|"JSON transaction\nHTTP POST"| REVIT
-    REVIT -->|".rvt binary"| EXP
+    RVTEXP -->|"JSON recipe\nHTTP POST /build-model"| REVIT
+    REVIT -->|".rvt binary + X-Revit-Warnings"| RVTEXP
 ```
 
 Both machines must be on the same local network (or VPN). The Ubuntu machine is the primary — it hosts the web UI, runs all AI processing, and drives the Windows Revit machine.
@@ -63,19 +71,20 @@ flowchart TD
     subgraph AGENTS["Stage 3 — Parallel Detection  asyncio.gather"]
         direction LR
         G["Grid Agent"]
-        C["Column Agent\ncolumn-detect.pt"]
-        F["Framing Agent\nstructural-framing.pt"]
-        W["Wall Agent (stub)"]
-        ST["Stairs (stub)"]
-        LI["Lift (stub)"]
-        SL["Slab (stub)"]
+        C["Column Agent\ncolumn-detect.pt ✅"]
+        F["Framing Agent\nstructural-framing.pt ✅"]
+        W["Wall Agent (stub) 🚧"]
+        ST["Stairs (stub) 🚧"]
+        LI["Lift (stub) 🚧"]
+        SL["Slab (stub) 🚧"]
     end
 
-    AGENTS --> MERGE["Stage 4: Detection Merger\nFusion + grid pixel alignment"]
-    MERGE --> INT["Stage 4c: Intelligence Middleware\nType Resolver → CrossElementValidator → ValidationAgent\nDfMA SS CP 65 · beam-column join-conflict detection"]
-    INT --> GEO["Stage 5: Geometry Generation\npx → world mm → Revit recipe\nJoin-conflict framing excluded"]
-    GEO --> BTE["Stage 5.5: BIM Enrichment + Dedup\nAppend intelligence metadata"]
-    BTE --> RVT["Stage 6a: RVT Export\n→ Windows Revit\nJoin errors auto-resolved"] & GLT["Stage 6b: glTF Export\n.glb Z→Y-up\ncolumns · framing · walls · slabs"]
+    AGENTS --> MERGE["Stage 4: Detection Merger\nHybridFusionPipeline + grid pixel alignment"]
+    MERGE --> INT["Stage 4c: Intelligence Middleware\nTypeResolver → CrossElementValidator → ValidationAgent\nDfMA SS CP 65 · beam-column join-conflict detection"]
+    INT --> SEM["Stage 5: Semantic AI (Ollama)\naisingapore/Gemma-SEA-LION-v4-4B-VL\ncolumn annotation · materials"]
+    SEM --> GEO["Stage 6: Geometry Generation\npx → world mm → Revit recipe\nJoin-conflict framing excluded"]
+    GEO --> BTE["Stage 6.5: BIM Enrichment + Dedup\nAppend intelligence metadata\n0.1 mm grid dedup"]
+    BTE --> RVT["Stage 7a: RVT Export\n→ Windows Revit\nWarningCollector auto-resolves join errors"] & GLT["Stage 7b: glTF Export\n.glb Z→Y-up\ncolumns · framing · walls · slabs"]
     RVT & GLT --> DONE(["BIM model + 3D preview"])
 ```
 
@@ -366,20 +375,21 @@ sequenceDiagram
 
     User->>Frontend: Upload PDF floor plan
     Frontend->>Backend: POST /api/process
-    Backend->>Backend: Stage 1: Security check
-    Backend->>Backend: Stage 2a: Vector extraction (PyMuPDF)
-    Backend->>Backend: Stage 2b: Raster render + YOLO (column-detect.pt)
-    Backend->>Backend: Stage 3: Hybrid fusion (snap to vector)
-    Backend->>Backend: Stage 4: Grid detection (px -> mm scale)
+    Backend->>Backend: Stage 1: Security check (SecurePDFRenderer)
+    Backend->>Backend: Stage 2: Source data — VectorProcessor + StreamingProcessor (parallel I/O)
+    Backend->>Backend: Stage 3: 7 parallel detection agents (asyncio.gather)
+    Note right of Backend: Grid · Column · Framing · Wall · Stairs · Lift · Slab
+    Backend->>Backend: Stage 4: Detection merger (HybridFusionPipeline, grid alignment)
     Backend->>Backend: Stage 4c: Intelligence middleware
-    Note right of Backend: Type Resolver -> Validator -> DfMA
-    Backend->>Backend: Stage 5: Semantic AI (Ollama/Gemini/Claude)
-    Backend->>Backend: Stage 6: Geometry generation
-    Backend->>Backend: Stage 6.5: BIM translator enrichment
-    Backend->>Revit: POST /build-model (JSON transaction)
+    Note right of Backend: TypeResolver → CrossElementValidator → ValidationAgent<br/>DfMA SS CP 65 · beam-column join-conflict
+    Backend->>Backend: Stage 5: Semantic AI (Ollama SEA-LION)
+    Backend->>Backend: Stage 6: Geometry generation (px → world mm)
+    Backend->>Backend: Stage 6.5: BIM enrichment + dedup
+    Backend->>Revit: Stage 7a: POST /build-model (JSON recipe)
     Revit->>Revit: Create BIM elements via Revit API
-    Revit-->>Backend: .RVT binary response
-    Backend->>Backend: Stage 7b: Export .glb (glTF)
+    Note right of Revit: WarningCollector auto-resolves join errors
+    Revit-->>Backend: .RVT binary + X-Revit-Warnings header
+    Backend->>Backend: Stage 7b: Export .glb (glTF Z→Y-up)
     Backend-->>Frontend: Download links (.rvt + .glb)
     Frontend-->>User: 3D preview + download
 ```
@@ -579,7 +589,9 @@ ListenLoop (background Task)
 
 ModelBuilder (runs on Revit main thread via ExternalEvent)
   +-- FindTemplate() -> prefers Default_M_*.rte (metric mm)
-  +-- Creates: Levels -> Grids -> Columns -> Walls -> Floors/Ceilings -> Doors -> Windows -> Rooms
+  +-- Creates: Levels -> Grids -> Columns -> Structural Framing (beams) -> Walls -> Slabs
+  +-- WarningCollector (IFailuresPreprocessor) auto-resolves "Cannot keep elements joined"
+      via HasResolutionOfType + SetCurrentResolutionType + ResolveFailure
 ```
 
 ---
@@ -605,7 +617,9 @@ mcc-amplify-v4/
 |   |   |   |-- rvt_exporter.py         <- Sends to Windows, receives .RVT
 |   |   |   +-- gltf_exporter.py        <- Writes .glb (Z-up to Y-up rotation)
 |   |   +-- corrections_logger.py       <- Logs human corrections for YOLO retraining
-|   +-- ml/weights/column-detect.pt     <- YOLO model weights
+|   +-- ml/weights/
+|       |-- column-detect.pt             <- YOLO column weights
+|       +-- structural-framing.pt        <- YOLO beam (structural framing) weights
 |-- revit_server/RevitAddin/            <- C# Revit 2023 Add-in (build on Windows)
 |-- frontend/src/                       <- React + Three.js web UI
 +-- tests/
@@ -621,11 +635,12 @@ mcc-amplify-v4/
 - [ ] Python environment created and activated
 - [ ] `pip install -r requirements.txt` completed without errors
 - [ ] `npm install` in `frontend/` completed
-- [ ] `backend/.env` configured with at least one semantic AI API key
-- [ ] `backend/nvidia_key.txt` created with NVIDIA NIM key (for chat agent)
+- [ ] `backend/.env` configured (Ollama backend — no API keys required)
+- [ ] Ollama installed and running (`ollama list` shows qwen3-vl:2b, gemma3:4b-it-qat, aisingapore/Gemma-SEA-LION-v4-4B-VL:latest)
 - [ ] `WINDOWS_REVIT_SERVER=http://LT-HQ-277:5000` set correctly
 - [ ] Intelligence middleware env vars reviewed (see Part 5)
 - [ ] `backend/ml/weights/column-detect.pt` present
+- [ ] `backend/ml/weights/structural-framing.pt` present
 - [ ] Data directories created
 - [ ] Windows hostname added to `/etc/hosts`
 - [ ] `curl http://LT-HQ-277:5000/health` returns `Revit Model Builder ready`

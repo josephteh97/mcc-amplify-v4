@@ -202,11 +202,14 @@ FAMILY NAMING CONVENTION
                TypeResolver        — cv2 contour analysis → circular / rectangular / L-shape
                CrossElementValidator — IoU overlap, grid distance, isolation checks
                ValidationAgent     — DfMA bay spacing, beam-column join-conflict detection
-  Stage 5  — Geometry Generation: px → world mm → _snap_to_nearest_grid → Revit recipe JSON
-  Stage 5.5— BIM Enrichment + Dedup: merge intelligence metadata; deduplicate snapped columns
-  Stage 6a — RVT Export → Windows Revit C# Add-in (TCP :5000);
+  Stage 5  — Semantic AI (Ollama aisingapore/Gemma-SEA-LION-v4-4B-VL):
+               column annotation, materials, building type inference
+  Stage 6  — Geometry Generation: px → world mm → _snap_to_nearest_grid → Revit recipe JSON
+               (beams flagged beam_column_join_conflict are excluded)
+  Stage 6.5— BIM Enrichment + Dedup: merge intelligence metadata; deduplicate snapped columns
+  Stage 7a — RVT Export → Windows Revit C# Add-in (TCP :5000);
                WarningCollector auto-resolves join errors; AI correction loop (max 3 rounds)
-  Stage 6b — glTF Export → .glb (Z-up to Y-up rotation); columns, framing, walls, slabs rendered
+  Stage 7b — glTF Export → .glb (Z-up to Y-up rotation); columns, framing, walls, slabs rendered
 
 ════════════════════════════════════════════════════════════
   YOUR ROLE

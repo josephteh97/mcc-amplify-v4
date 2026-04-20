@@ -10,7 +10,7 @@ Upload a PDF architectural floor plan and receive a fully-formed, editable Revit
 
 1. Runs **7 detection agents in parallel** — one for each structural element type (column, structural framing, stairs, lift, wall, slab) plus a grid detection agent that derives the real-world coordinate scale from dimension annotations. Scale text (e.g. "1:100") is intentionally ignored as unreliable.
 2. Merges all agent outputs, snaps detections to the PDF vector geometry, and resolves pixel coordinates into real-world mm using the detected grid.
-3. Runs an **intelligence middleware layer** — type resolution (circular/rectangular/L-shape via cv2 contour analysis), cross-element validation (IoU overlap, grid distance, isolation checks), and DfMA rule enforcement (SS CP 65). Suspicious elements are flagged for the Edit Panel; fatal rule breaches abort early.
+3. Runs an **intelligence middleware layer** — type resolution (circular/rectangular/L-shape via cv2 contour analysis), cross-element validation (IoU overlap, grid distance, isolation checks), and DfMA rule enforcement (SS CP 65). Suspicious elements are flagged for the Edit Panel; beams whose placement would trigger Revit join conflicts are excluded from the recipe.
 4. Enriches the Revit recipe with intelligence metadata (resolved type, validation flags, DfMA compliance status) then deduplicates elements that snapped to the same grid intersection.
 5. Sends the Revit recipe over the network to a Windows machine running Revit 2023, where a C# Add-in creates all structural elements natively via the Revit API and returns the resulting `.RVT` file. Revit warnings trigger an AI correction loop (max 3 rounds).
 6. Simultaneously exports a lightweight `.glb` (glTF binary) for instant web-based 3D preview.
@@ -20,25 +20,28 @@ Upload a PDF architectural floor plan and receive a fully-formed, editable Revit
 ## Architecture
 
 ```
-Ubuntu (Linux) Machine                    Windows Machine
-+--------------------------------------+  +----------------------------------+
-|  FastAPI Backend (port 8000)         |  |  Revit 2023                      |
-|  +--------------------------------+  |  |  +----------------------------+  |
-|  |  PDF Security Check            |  |  |  |  C# Add-in (RevitAddin)    |  |
-|  |  Track A: Vector Extraction    |  |  |  |  TcpListener on TCP :5000  |  |
-|  |  Track B: Raster Render+YOLO   |  |  |  |  Receives JSON transaction  |  |
-|  |  Hybrid Fusion (vector snap)   |  |  |  |  Builds walls/doors/columns |  |
-|  |  Grid-based Scale Detection    |  |  |  |  Returns .RVT file         |  |
-|  |  Intelligence Middleware       |--+--+->|                            |  |
-|  |  Semantic AI (Gemini/Claude)   |  |  |  +----------------------------+  |
-|  |  3D Geometry Generation        |  |  |                                  |
-|  |  BIM Translator Enrichment     |  |  +----------------------------------+
-|  |  RVT Exporter (RevitClient)    |<-+--+
-|  |  glTF Exporter                 |  |
-|  +--------------------------------+  |
-|  Chat Agent (NVIDIA NIM / Gemini)    |
-|  React + Three.js Frontend (5173)    |
-+--------------------------------------+
+Ubuntu (Linux) Machine                      Windows Machine
++----------------------------------------+  +----------------------------------+
+|  FastAPI Backend (port 8000)           |  |  Revit 2023                      |
+|  +----------------------------------+  |  |  +----------------------------+  |
+|  |  PDF Security (150 MP budget)    |  |  |  |  C# Add-in (RevitAddin)    |  |
+|  |  Source: Vector + Raster (para.) |  |  |  |  TcpListener TCP :5000     |  |
+|  |  7 Parallel Detection Agents     |  |  |  |  Receives JSON recipe      |  |
+|  |   Grid · Col · Frame · Wall ·    |  |  |  |  Builds columns/framing/   |  |
+|  |   Stairs · Lift · Slab           |  |  |  |  walls/slabs natively      |  |
+|  |  Detection Merger (grid align)   |  |  |  |  WarningCollector          |  |
+|  |  Intelligence (TypeResolver →    |--+--+->|  auto-resolves join errors |  |
+|  |   CrossElemValidator →           |  |  |  |  Returns .RVT binary       |  |
+|  |   ValidationAgent DfMA+JoinCk)   |  |  |  +----------------------------+  |
+|  |  Semantic AI (Ollama SEA-LION)   |  |  |                                  |
+|  |  Geometry Generation             |  |  +----------------------------------+
+|  |  BIM Enricher + Dedup            |  |
+|  |  RVT Exporter (RevitClient)      |<-+--+
+|  |  glTF Exporter                   |  |
+|  +----------------------------------+  |
+|  Chat Agent (Ollama qwen3-vl / gemma3) |
+|  React + Three.js Frontend (5173)      |
++----------------------------------------+
 ```
 
 Both machines must be on the same local network (or VPN). The Ubuntu machine is the primary — it hosts the web UI, runs all AI processing, and drives the Windows Revit machine.
@@ -56,67 +59,99 @@ flowchart LR
     subgraph SEC["Stage 1 — Security & Size Check"]
         sec["SecurePDFRenderer
         Validate magic bytes
-        Cap render DPI (150 MP pixel budget)"]
+        150 MP pixel budget · 300 DPI up to A0"]
     end
 
-    SEC --> AGENTS
+    SEC --> SRC
 
-    subgraph AGENTS["Stage 2 — Parallel Detection  ·  asyncio.gather"]
+    subgraph SRC["Stage 2 — Source Data  (parallel I/O)"]
+        direction LR
+        VEC["VectorProcessor
+        PDF paths + text spans"]
+        RAS["StreamingProcessor
+        300 DPI raster render"]
+    end
+
+    SRC --> AGENTS
+
+    subgraph AGENTS["Stage 3 — Parallel Detection  ·  asyncio.gather"]
         direction TB
-        GRID["Grid Detection\nAgent"]
-        COL["Column\nAgent"]
-        FRAME["Structural Framing\nAgent"]
-        STAIR["Stairs\nAgent"]
-        LIFT["Lift\nAgent"]
-        WALL["Wall\nAgent"]
-        SLAB["Slab\nAgent"]
+        GRID["Grid Agent
+        structural grid → mm scale"]
+        COL["Column Agent
+        column-detect.pt  ✅"]
+        FRAME["Framing Agent
+        structural-framing.pt  ✅"]
+        WALL["Wall Agent  🚧"]
+        STAIR["Stairs Agent  🚧"]
+        LIFT["Lift Agent  🚧"]
+        SLAB["Slab Agent  🚧"]
     end
 
-    AGENTS --> MERGE["Stage 3 — Detection Merger + Parser
-    Fuse agent outputs
-    Snap to vector geometry
-    Resolve coordinate space"]
+    AGENTS --> MERGE["Stage 4 — Detection Merger
+    HybridFusionPipeline · grid pixel alignment
+    {bbox, center, confidence} → pixel coords"]
 
     MERGE --> INT
 
-    subgraph INTBOX["Stage 4 — Intelligence Middleware"]
+    subgraph INTBOX["Stage 4c — Intelligence Middleware"]
         INT["TypeResolver
-        cv2 contour analysis
-        circular / rectangular / L-shape"]
+        cv2 contour → circular / rectangular / L-shape"]
         INT --> CEV["CrossElementValidator
         IoU overlap · grid distance · isolation"]
         CEV --> VAL["ValidationAgent
-        DfMA rules SS CP 65
-        Orphan detection"]
+        DfMA SS CP 65 · bay spacing
+        beam-column join-conflict detection"]
     end
 
-    CEV -- "⚠️ suspicious" --> EP
+    CEV -- "⚠️ flagged" --> EP
+    VAL --> SEM
 
-    VAL -- "fatal rule breach" --> ABORT(["❌ Abort"])
-    VAL --> BTE
+    subgraph SEMBOX["Stage 5 — Semantic AI  (Ollama)"]
+        SEM["Column annotation · SemanticAnalyzer
+        aisingapore/Gemma-SEA-LION-v4-4B-VL
+        materials · dimensions · building type"]
+    end
 
-    subgraph BTEBOX["Stage 5 — BIM Translator Enrichment + Dedup"]
+    SEM --> GEO["Stage 6 — Geometry Generation
+    _px_to_world · _snap_to_nearest_grid
+    Join-conflict framing excluded from recipe"]
+
+    GEO --> BTE
+
+    subgraph BTEBOX["Stage 6.5 — BIM Enrichment + Dedup"]
         BTE["BIMTranslatorEnricher
         Merge intelligence metadata into recipe
-        Deduplicate elements at same grid intersection"]
+        Deduplicate columns at same grid point (0.1 mm)"]
     end
 
-    BTE --> TRANS["BIM-Translator\nAgent"]
+    BTE --> RVTBOX & GLTBOX
 
-    TRANS -- "API error ×3" --> VAL
+    subgraph RVTBOX["Stage 7a — RVT Export  (Linux → Windows)"]
+        EXP["RevitClient · HTTP POST → :5000
+        WarningCollector auto-resolves join errors"]
+        EXP --> WRN{"Revit warnings?"}
+        WRN -->|"yes · attempt ≤ 3"| FIX["SemanticAnalyzer
+        analyze_revit_warnings()
+        patch whitelisted fields"]
+        FIX -->|resend recipe| EXP
+        WRN -->|"no / accepted"| RVT[".rvt file"]
+    end
 
-    TRANS --> REVIT["Revit Add-in\nWindows :5000"]
-    TRANS --> GLTF["glTF Exporter"]
+    subgraph GLTBOX["Stage 7b — glTF Export"]
+        GLTF["GltfExporter
+        Z-up → Y-up rotation
+        columns · framing · walls · slabs"]
+    end
 
-    REVIT --> RVT(["✅ .rvt"])
-    GLTF  --> GLB(["✅ .glb"])
-
-    RVT & GLB --> UIBOX
+    RVT & GLTF --> UIBOX
 
     subgraph UIBOX["Frontend  ·  React + Three.js"]
-        EP["Edit Panel"]
+        EP["Edit Panel
+        manual corrections"]
         VW["3D Viewer"]
-        CHAT["AI Chat"]
+        CHAT["AI Chat
+        Ollama · qwen3-vl / gemma3"]
     end
 
     EP -- "edit + rebuild" --> MERGE
@@ -127,12 +162,15 @@ flowchart LR
 | # | Stage | Component | Notes |
 |---|-------|-----------|-------|
 | 1 | Security & size check | `SecurePDFRenderer` | Validates magic bytes; 150 MP pixel budget allows 300 DPI up to A0/ANSI-E size |
-| 2 | Parallel detection agents | Grid · Column · Structural Framing · Stairs · Lift · Wall · Slab | All 7 agents run concurrently via `asyncio.gather`; each returns `{bbox, center, confidence}` dicts |
-| 3 | Detection merger + parser | `HybridFusionPipeline` / `GridDetector` | Fuses agent outputs, snaps to vector geometry, resolves coordinate space |
-| 4 | Intelligence middleware | `resolve_types` / `validate_elements` / `enforce_rules` | cv2 contour type classification; IoU/grid/isolation validation; DfMA bay-spacing rules (SS CP 65) |
-| 5 | BIM enrichment + dedup | `BIMTranslatorEnricher` | Merges intelligence metadata; deduplicates elements at same grid intersection (rounds to 0.1 mm) |
-| 6 | BIM-Translator Agent | `RvtExporter` + Revit Add-in | Sends recipe to Windows Revit; AI correction loop (max 3 rounds) on warnings |
-| 7 | Export | `GltfExporter` + Revit Add-in | Writes `.glb` (Z-up → Y-up) and receives `.rvt` binary from Windows |
+| 2 | Source data (parallel I/O) | `VectorProcessor` + `StreamingProcessor` | PDF paths/text spans + 300 DPI raster render, run concurrently |
+| 3 | Parallel detection agents | Grid · Column · Structural Framing · Stairs · Lift · Wall · Slab | All 7 agents run concurrently via `asyncio.gather`; each returns `{bbox, center, confidence}` dicts |
+| 4 | Detection merger | `HybridFusionPipeline` / `GridDetector` | Fuses agent outputs, snaps to vector geometry, resolves pixel → mm coordinate space |
+| 4c | Intelligence middleware | `resolve_types` / `validate_elements` / `enforce_rules` | cv2 contour type classification; IoU/grid/isolation validation; DfMA bay-spacing rules (SS CP 65); beam-column join-conflict detection |
+| 5 | Semantic AI | `SemanticAnalyzer` (Ollama) | `aisingapore/Gemma-SEA-LION-v4-4B-VL` — column annotation, materials, building type inference |
+| 6 | Geometry generation | `GeometryGenerator` | `_px_to_world` → `_snap_to_nearest_grid` → Revit recipe; excludes beams flagged `beam_column_join_conflict` |
+| 6.5 | BIM enrichment + dedup | `BIMTranslatorEnricher` | Merges intelligence metadata; deduplicates elements at same grid intersection (rounds to 0.1 mm) |
+| 7a | RVT export | `RvtExporter` + Revit Add-in | Sends recipe to Windows Revit; AI correction loop (max 3 rounds) on warnings; `WarningCollector` auto-resolves join errors |
+| 7b | glTF export | `GltfExporter` | Writes `.glb` (Z-up → Y-up); renders columns, framing, walls, slabs |
 
 ---
 
@@ -188,7 +226,7 @@ mcc-amplify-v4/
 |   |-- agents/
 |   |   └-- revit_agent.py             <- Claude MCP agent for step-by-step Revit placement
 |   |-- chat_agent/
-|   |   |-- agent.py                   <- Chat agent (NVIDIA NIM DeepSeek / Gemini)
+|   |   |-- agent.py                   <- Chat agent (Ollama: qwen3-vl:2b / gemma3:4b-it-qat)
 |   |   |-- context_manager.py         <- Per-user conversation context
 |   |   |-- message_router.py          <- Routes messages to correct handler
 |   |   └-- pipeline_observer.py       <- Bridges pipeline events to chat
@@ -203,7 +241,7 @@ mcc-amplify-v4/
 |   |   |-- grid_detector.py           <- Structural grid detection, pixel->mm conversion
 |   |   |-- yolo_runner.py             <- Tiling inference: CLAHE + 1280 px tiles / 200 px overlap + NMS
 |   |   |-- column_annotator.py        <- 5-pass column annotation parser (schedule, proximity, vision LLM, single-scheme, 800 mm default)
-|   |   |-- semantic_analyzer.py       <- Multi-backend AI (Ollama / Gemini / Claude)
+|   |   |-- semantic_analyzer.py       <- Semantic AI (Ollama aisingapore/Gemma-SEA-LION-v4-4B-VL)
 |   |   |-- geometry_generator.py      <- 2D -> Revit 3D parameter builder
 |   |   |-- revit_client.py            <- HTTP client -> Windows Revit Add-in
 |   |   |-- job_store.py               <- SQLite-backed persistent job status (LRU eviction)
@@ -217,7 +255,7 @@ mcc-amplify-v4/
 |   |   |   └-- gltf_exporter.py       <- Writes .glb (Z-up to Y-up rotation)
 |   |   |-- corrections_logger.py      <- Logs human corrections for YOLO retraining
 |   |   └-- vision_comparator.py       <- Vision-based diff for Revit feedback
-|   |-- ml/weights/                     <- (user-supplied) place column-detect.pt here; see Troubleshooting
+|   |-- ml/weights/                     <- (user-supplied) place column-detect.pt and structural-framing.pt here; see Troubleshooting
 |   └-- utils/
 |       |-- api_keys.py                <- Key resolution (env var -> .txt file)
 |       |-- file_handler.py            <- Upload file handling
@@ -266,15 +304,16 @@ mcc-amplify-v4/
 Key settings in `backend/.env`:
 
 ```bash
-# -- Chat Agent ----------------------------------------------------------------
-# NVIDIA NIM is default (free 1000 credits) -- put key in backend/nvidia_key.txt
-# Sign up: https://build.nvidia.com
-CHAT_MODEL_BACKEND=nvidia_nim           # or: gemini_api
+# -- Chat Agent (local Ollama, no API keys) ------------------------------------
+#   qwen3_vl  -> qwen3-vl:2b       (default)
+#   gemma3_it -> gemma3:4b-it-qat  (alternative)
+CHAT_MODEL_BACKEND=qwen3_vl
 
-# -- Semantic AI Backend (pipeline Stage 5) ------------------------------------
-SEMANTIC_MODEL_BACKEND=gemini_api       # or: anthropic_api, ollama
-# Put API keys in backend/google_key.txt or backend/nvidia_key.txt (gitignored)
-# Env vars also accepted: GOOGLE_API_KEY, ANTHROPIC_API_KEY, NVIDIA_API_KEY
+# -- Semantic AI Backend (pipeline Stage 5, local Ollama) ----------------------
+SEMANTIC_BACKEND_PRIORITY=ollama
+SEMANTIC_MODEL_BACKEND=ollama
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=aisingapore/Gemma-SEA-LION-v4-4B-VL:latest
 
 # -- Windows Revit Server ------------------------------------------------------
 WINDOWS_REVIT_SERVER=http://LT-HQ-277:5000
@@ -287,6 +326,9 @@ ISOLATION_RADIUS_PX=200         # Neighbourhood consensus radius
 MIN_BAY_MM=3000                 # DfMA minimum bay spacing (SS CP 65)
 MAX_BAY_MM=12000                # DfMA maximum bay spacing (SS CP 65)
 
+# -- Beam geometry default -----------------------------------------------------
+DEFAULT_BEAM_DEPTH_MM=800       # Beam cross-section depth (matches column default)
+
 # -- FastAPI -------------------------------------------------------------------
 APP_HOST=0.0.0.0
 APP_PORT=8000
@@ -296,17 +338,15 @@ MAX_UPLOAD_SIZE=52428800   # 50 MB
 ALLOWED_EXTENSIONS=pdf
 ```
 
-### Architectural defaults (geometry_generator)
+### Structural defaults (geometry_generator)
 
 | Parameter | Default | Unit |
 |-----------|---------|------|
 | Wall height | 2800 | mm |
 | Wall thickness | 200 | mm |
-| Door height | 2100 | mm |
-| Window height | 1500 | mm |
-| Sill height | 900 | mm |
-| Floor thickness | 200 | mm |
+| Slab thickness | 200 | mm |
 | Column default size | 800 | mm |
+| Beam depth (`DEFAULT_BEAM_DEPTH_MM`) | 800 | mm |
 
 ---
 
@@ -361,7 +401,7 @@ The script waits for the backend to be ready before starting the frontend. Press
 2. Upload a **PDF** floor plan (max 50 MB).
 3. Watch the real-time progress bar advance through all pipeline stages.
 4. When processing completes:
-   - Download the native **`.RVT`** file and open it in Revit -- all walls, doors, windows, and columns will be editable native elements.
+   - Download the native **`.RVT`** file and open it in Revit -- all columns, structural framing, walls, and slabs will be editable native elements.
    - View the **3D web preview** (glTF) directly in the browser.
 
 ---
@@ -426,8 +466,8 @@ Key behaviours:
 - Check the backend log: grid source and line count are logged at Stage 4.
 
 **YOLO weights not found**
-- Place the trained weights at `backend/ml/weights/column-detect.pt`.
-- The pipeline continues without YOLO; only vector geometry is used downstream.
+- Place the trained weights at `backend/ml/weights/column-detect.pt` and `backend/ml/weights/structural-framing.pt`.
+- The pipeline continues if either is missing — affected agents return empty detections and only vector geometry is used downstream for that element type.
 
 **Backend won't start**
 ```bash
@@ -447,9 +487,9 @@ tail -50 logs/app.log
 | Metric | Value |
 |--------|-------|
 | Processing time | 30-90 s per floor plan |
-| Wall detection accuracy | 85-95 % |
-| Door / window detection | 80-90 % |
-| Column detection | 75-90 % |
+| Column detection accuracy | 75-90 % |
+| Structural framing (beam) detection | 75-90 % |
+| Wall / stair / lift / slab | stub agents — untrained |
 | Max file size | 50 MB |
 
 ---

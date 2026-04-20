@@ -33,7 +33,7 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 # Backend priority list (comma-separated, e.g., "ollama,gemini_api")
 BACKEND_PRIORITY = [
     b.strip() for b in os.getenv("SEMANTIC_BACKEND_PRIORITY", "").split(",") if b.strip()
-] or [os.getenv("SEMANTIC_MODEL_BACKEND", "gemini_api")]
+] or [os.getenv("SEMANTIC_MODEL_BACKEND", "ollama")]
 
 LOCAL_MODELS_DIR = Path(os.getenv("LOCAL_MODELS_DIR", "../models"))
 

@@ -14,8 +14,8 @@ const USER_ID = (() => {
 
 // Short label shown on the selector buttons
 const MODEL_SHORT = {
-  nvidia_nim: 'DeepSeek',
-  gemini_api: 'Gemini',
+  qwen3_vl:  'Qwen3-VL',
+  gemma3_it: 'Gemma 3',
 };
 
 const ChatPanel = ({ jobId }) => {
@@ -41,15 +41,15 @@ const ChatPanel = ({ jobId }) => {
       .then(r => r.json())
       .then(data => {
         setModels(data.models || []);
-        setSelectedModel(data.default || 'nvidia_nim');
+        setSelectedModel(data.default || 'qwen3_vl');
       })
       .catch(() => {
         // Fallback if the endpoint is unreachable during startup
         setModels([
-          { backend: 'nvidia_nim', display_name: 'DeepSeek V3.1',   provider: 'NVIDIA NIM', available: true },
-          { backend: 'gemini_api', display_name: 'Gemini 2.5 Flash', provider: 'Google',     available: true },
+          { backend: 'qwen3_vl',  display_name: 'qwen3-vl:2b',       provider: 'Ollama', available: true },
+          { backend: 'gemma3_it', display_name: 'gemma3:4b-it-qat',  provider: 'Ollama', available: true },
         ]);
-        setSelectedModel('nvidia_nim');
+        setSelectedModel('qwen3_vl');
       });
   }, []);
 

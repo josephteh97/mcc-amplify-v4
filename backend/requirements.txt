@@ -21,7 +21,6 @@ python-jose[cryptography]==3.3.0
 # ----------------
 # AI & Machine Learning
 # ----------------
-openai==1.57.0            # NVIDIA NIM (DeepSeek chat) + optional GPT-4 Vision; >=1.35 required for httpx>=0.28 compat (proxies arg removed)
 ultralytics==8.4.9      # YOLOv8 for element detection
 torch==2.10.0+cu128              # PyTorch (required by YOLO)
 torchvision==0.25.0+cu128       # Computer vision utilities

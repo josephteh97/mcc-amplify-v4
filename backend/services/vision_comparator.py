@@ -36,7 +36,7 @@ from typing import Optional
 
 from loguru import logger
 
-_BACKEND = os.getenv("SEMANTIC_MODEL_BACKEND", "gemini_api")
+_BACKEND = os.getenv("SEMANTIC_MODEL_BACKEND", "ollama")
 
 _COMPARISON_PROMPT = """\
 You are a BIM quality-control expert comparing two architectural floor plan images.
