@@ -37,11 +37,11 @@ class SecurePDFRenderer:
           objects (images + fonts) the renderer forces tiled mode to
           limit peak memory from resource decompression.
         - DPI inflation: DPI is always capped so total pixel count
-          stays within MAX_PIXEL_COUNT (25 MP).
+          stays within MAX_PIXEL_COUNT (150 MP).
     """
 
-    MAX_PIXEL_COUNT  = 25_000_000  # 25 MP — handles A0/A1 engineering drawings at 100-130 DPI
-    MAX_MEMORY_MB    = 400         # bytes budget before mandatory tiling kicks in
+    MAX_PIXEL_COUNT  = 150_000_000  # 150 MP — 300 DPI at A0/ANSI-E; larger sheets are DPI-reduced then tiled
+    MAX_MEMORY_MB    = 600          # MB budget before mandatory tiling kicks in
     MAX_FILE_SIZE_MB = 100
     TIMEOUT_SECONDS  = 30
 

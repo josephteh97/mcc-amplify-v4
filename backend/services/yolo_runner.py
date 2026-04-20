@@ -170,12 +170,14 @@ def run_yolo(
             w = x2 - x1;  h = y2 - y1
             sq = min(w, h) / max(w, h) if max(w, h) > 0 else 0
             if sq >= MIN_SQ and MIN_SIDE <= w <= MAX_SIDE and MIN_SIDE <= h <= MAX_SIDE:
+                bx1 = float(x1 * coord_scale)
+                by1 = float(y1 * coord_scale)
+                bx2 = float(x2 * coord_scale)
+                by2 = float(y2 * coord_scale)
                 detections.append({
                     "type":       "column",
-                    "bbox":       [
-                        float(x1 * coord_scale), float(y1 * coord_scale),
-                        float(x2 * coord_scale), float(y2 * coord_scale),
-                    ],
+                    "bbox":       [bx1, by1, bx2, by2],
+                    "center":     [(bx1 + bx2) / 2, (by1 + by2) / 2],
                     "confidence": float(conf_val),
                 })
 
