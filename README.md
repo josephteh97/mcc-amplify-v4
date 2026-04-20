@@ -8,17 +8,12 @@ AI-powered system that converts PDF floor plans into native Revit (`.RVT`) BIM m
 
 Upload a PDF architectural floor plan and receive a fully-formed, editable Revit file. No manual re-drawing, no IFC round-trips. The system:
 
-1. Extracts precise vector geometry and text directly from the PDF (concurrent with step 2).
-2. Renders the page at up to 300 DPI (150 MP pixel budget — handles A0/ANSI-E drawings) and runs a YOLO detector to identify columns. Each detection carries its pixel bbox center.
-3. Fuses vector precision with ML detection results — wall endpoints are snapped to the nearest axis-aligned vector line.
-4. Detects the structural column grid from vector geometry and its dimension annotations to derive the real-world coordinate scale. Scale text printed on the drawing (e.g. "1:100") is intentionally ignored as unreliable.
-5. Runs an **intelligence middleware layer** — type resolution (circular/rectangular/L-shape classification via cv2 contour analysis), cross-element validation (IoU overlap, grid distance, isolation checks), and DfMA rule enforcement (SS CP 65).
-6. Sends the rendered image and fused elements to a vision-capable AI model (Ollama → Gemini → Claude priority chain) for semantic enrichment — building type, materials, room purposes, column dimensions.
-7. Generates 3D parameters (wall locations, door swings, window sill heights, slab boundaries) formatted as Revit API instructions. Each column center is converted pixel → world mm then snapped to the nearest grid intersection.
-8. Enriches the Revit recipe columns with intelligence metadata (resolved type, validation flags, DfMA compliance status).
-9. Deduplicates columns that snapped to the same grid intersection — these would otherwise cause Revit "identical instances in the same place" warnings.
-10. Sends the instructions over the network to a Windows machine running Revit, where a C# Add-in creates all elements natively via the Revit API, and returns the resulting `.RVT` file.
-11. Simultaneously exports a lightweight `.glb` (glTF binary) for instant web-based 3D preview, including walls, columns, doors, windows, and floor slabs.
+1. Runs **7 detection agents in parallel** — one for each structural element type (column, structural framing, stairs, lift, wall, slab) plus a grid detection agent that derives the real-world coordinate scale from dimension annotations. Scale text (e.g. "1:100") is intentionally ignored as unreliable.
+2. Merges all agent outputs, snaps detections to the PDF vector geometry, and resolves pixel coordinates into real-world mm using the detected grid.
+3. Runs an **intelligence middleware layer** — type resolution (circular/rectangular/L-shape via cv2 contour analysis), cross-element validation (IoU overlap, grid distance, isolation checks), and DfMA rule enforcement (SS CP 65). Suspicious elements are flagged for the Edit Panel; fatal rule breaches abort early.
+4. Enriches the Revit recipe with intelligence metadata (resolved type, validation flags, DfMA compliance status) then deduplicates elements that snapped to the same grid intersection.
+5. Sends the Revit recipe over the network to a Windows machine running Revit 2023, where a C# Add-in creates all structural elements natively via the Revit API and returns the resulting `.RVT` file. Revit warnings trigger an AI correction loop (max 3 rounds).
+6. Simultaneously exports a lightweight `.glb` (glTF binary) for instant web-based 3D preview.
 
 ---
 
@@ -53,8 +48,8 @@ Both machines must be on the same local network (or VPN). The Ubuntu machine is 
 ## Pipeline Stages
 
 ```mermaid
-flowchart TD
-    PDF(["PDF Upload"])
+flowchart LR
+    PDF(["📄 PDF"])
 
     PDF --> SEC
 
@@ -64,109 +59,67 @@ flowchart TD
         Cap render DPI (150 MP pixel budget)"]
     end
 
-    SEC --> VEC & RAS
+    SEC --> AGENTS
 
-    subgraph PAR["Stage 2 — Dual Tracks (concurrent via asyncio.gather)"]
-        VEC["Track A — Vector Extraction
-        VectorProcessor
-        PyMuPDF paths + text spans
-        Multi-page column schedule scan"]
-        RAS["Track B — Raster Render + YOLO
-        StreamingProcessor → column-detect.pt
-        Tiling 1280 px / 200 px overlap
-        NMS + squareness filter
-        Detection dict: {bbox, center, confidence}"]
+    subgraph AGENTS["Stage 2 — Parallel Detection  ·  asyncio.gather"]
+        direction TB
+        GRID["Grid Detection\nAgent"]
+        COL["Column\nAgent"]
+        FRAME["Structural Framing\nAgent"]
+        STAIR["Stairs\nAgent"]
+        LIFT["Lift\nAgent"]
+        WALL["Wall\nAgent"]
+        SLAB["Slab\nAgent"]
     end
 
-    VEC & RAS --> FUS
+    AGENTS --> MERGE["Stage 3 — Detection Merger + Parser
+    Fuse agent outputs
+    Snap to vector geometry
+    Resolve coordinate space"]
 
-    subgraph FUSBOX["Stage 3 — Hybrid Fusion"]
-        FUS["HybridFusionPipeline
-        Snap YOLO detections to vector lines
-        Refine wall endpoints"]
-    end
+    MERGE --> INT
 
-    FUS --> GRD
-
-    subgraph GRDBOX["Stage 4 — Grid Detection"]
-        GRD["GridDetector
-        Structural grid from PDF vector geometry
-        Dimension annotations → mm spacings
-        Align pixel reference to YOLO column centres"]
-    end
-
-    GRD --> INT
-
-    subgraph INTBOX["Stage 4c — Intelligence Middleware"]
+    subgraph INTBOX["Stage 4 — Intelligence Middleware"]
         INT["TypeResolver
         cv2 contour analysis
         circular / rectangular / L-shape"]
         INT --> CEV["CrossElementValidator
         IoU overlap · grid distance · isolation"]
         CEV --> VAL["ValidationAgent
-        DfMA rules (SS CP 65)
-        Orphan detection (off_grid AND isolated)"]
+        DfMA rules SS CP 65
+        Orphan detection"]
     end
 
-    VAL --> SEM
+    CEV -- "⚠️ suspicious" --> EP
 
-    subgraph SEMBOX["Stage 5 — Semantic AI"]
-        SEM["SemanticAnalyzer
-        Column annotation parsing from PDF text"]
-        SEM -->|priority 1| OLL["Ollama
-        gemma3:4b / qwen3-vl"]
-        SEM -->|priority 2| GEM["Google Gemini API"]
-        SEM -->|priority 3| ANT["Anthropic Claude API"]
-    end
+    VAL -- "fatal rule breach" --> ABORT(["❌ Abort"])
+    VAL --> BTE
 
-    OLL & GEM & ANT --> GEO
-
-    subgraph GEOBOX["Stage 6 — 3D Geometry Generation"]
-        GEO["GeometryGenerator
-        _px_to_world: pixel → real-world mm
-        _snap_to_nearest_grid: half-bay tolerance
-        normalize_column_dimensions
-        Build Revit API recipe JSON"]
-    end
-
-    GEO --> BTE
-
-    subgraph BTEBOX["Stage 6.5 — BIM Translator Enrichment"]
+    subgraph BTEBOX["Stage 5 — BIM Translator Enrichment + Dedup"]
         BTE["BIMTranslatorEnricher
-        Merge intelligence metadata into recipe columns
-        resolved_type · validation_flags · DfMA status"]
+        Merge intelligence metadata into recipe
+        Deduplicate elements at same grid intersection"]
     end
 
-    BTE --> DEDUP
+    BTE --> TRANS["BIM-Translator\nAgent"]
 
-    subgraph DEDUPBOX["Stage 6.6 — Column Deduplication"]
-        DEDUP["Orchestrator
-        Remove columns at duplicate grid intersections
-        Rounds coords to 0.1 mm — handles float near-equals
-        Metadata already merged — safe to dedup here"]
+    TRANS -- "API error ×3" --> VAL
+
+    TRANS --> REVIT["Revit Add-in\nWindows :5000"]
+    TRANS --> GLTF["glTF Exporter"]
+
+    REVIT --> RVT(["✅ .rvt"])
+    GLTF  --> GLB(["✅ .glb"])
+
+    RVT & GLB --> UIBOX
+
+    subgraph UIBOX["Frontend  ·  React + Three.js"]
+        EP["Edit Panel"]
+        VW["3D Viewer"]
+        CHAT["AI Chat"]
     end
 
-    DEDUP --> RVTBOX & GLTBOX
-
-    subgraph RVTBOX["Stage 7a — RVT Export (Linux → Windows)"]
-        EXP["RvtExporter + RevitClient
-        HTTP POST to Revit 2023 C# Add-in
-        Builds levels · grids · walls
-        columns · doors · windows · slabs"]
-        EXP --> WRN{"Revit warnings?"}
-        WRN -->|"yes, attempt < 3"| FIX["AI correction round
-        SemanticAnalyzer patches recipe"]
-        FIX -->|resend| EXP
-        WRN -->|"no / accepted"| RVT[".rvt file"]
-    end
-
-    subgraph GLTBOX["Stage 7b — glTF Export"]
-        GLTF["GltfExporter
-        .glb with Z-up to Y-up rotation
-        walls · columns · floors · openings"]
-    end
-
-    RVT & GLTF --> DONE(["BIM model + 3D preview ready"])
+    EP -- "edit + rebuild" --> MERGE
 ```
 
 ### Stage Summary
@@ -174,16 +127,12 @@ flowchart TD
 | # | Stage | Component | Notes |
 |---|-------|-----------|-------|
 | 1 | Security & size check | `SecurePDFRenderer` | Validates magic bytes; 150 MP pixel budget allows 300 DPI up to A0/ANSI-E size |
-| 2a | Vector extraction | `VectorProcessor` | Extracts paths + text spans from the PDF (PyMuPDF); runs concurrently with 2b |
-| 2b | Raster render + detection | `StreamingProcessor` + YOLO | Tiling inference with `column-detect.pt`; each detection dict includes `{bbox, center, confidence}` |
-| 3 | Hybrid fusion | `HybridFusionPipeline` | Snaps YOLO wall endpoints to nearest vector line |
-| 4 | Grid detection | `GridDetector` | Derives real-world scale from structural grid lines + dimension annotations; scale text ignored |
-| 4c | Intelligence middleware | `resolve_types` / `validate_elements` / `enforce_rules` | cv2 contour type classification; IoU/grid/isolation validation; DfMA bay-spacing rules (SS CP 65) |
-| 5 | Semantic AI analysis | `SemanticAnalyzer` | Ollama (gemma3:4b) → Gemini → Claude; column annotation parsing from PDF text |
-| 6 | 3D geometry | `GeometryGenerator` | `_px_to_world` → `_snap_to_nearest_grid` → `normalize_column_dimensions` → Revit recipe JSON |
-| 6.5 | BIM enrichment | `BIMTranslatorEnricher` | Merges intelligence metadata into recipe columns (must run before dedup) |
-| 6.6 | Column deduplication | orchestrator | Removes columns sharing the same grid intersection; rounds to 0.1 mm to handle float near-equals |
-| 7 | BIM export | `RvtExporter` + `GltfExporter` | Sends to Windows Revit with closed-loop AI warning correction (max 3 rounds); also writes `.glb` |
+| 2 | Parallel detection agents | Grid · Column · Structural Framing · Stairs · Lift · Wall · Slab | All 7 agents run concurrently via `asyncio.gather`; each returns `{bbox, center, confidence}` dicts |
+| 3 | Detection merger + parser | `HybridFusionPipeline` / `GridDetector` | Fuses agent outputs, snaps to vector geometry, resolves coordinate space |
+| 4 | Intelligence middleware | `resolve_types` / `validate_elements` / `enforce_rules` | cv2 contour type classification; IoU/grid/isolation validation; DfMA bay-spacing rules (SS CP 65) |
+| 5 | BIM enrichment + dedup | `BIMTranslatorEnricher` | Merges intelligence metadata; deduplicates elements at same grid intersection (rounds to 0.1 mm) |
+| 6 | BIM-Translator Agent | `RvtExporter` + Revit Add-in | Sends recipe to Windows Revit; AI correction loop (max 3 rounds) on warnings |
+| 7 | Export | `GltfExporter` + Revit Add-in | Writes `.glb` (Z-up → Y-up) and receives `.rvt` binary from Windows |
 
 ---
 
