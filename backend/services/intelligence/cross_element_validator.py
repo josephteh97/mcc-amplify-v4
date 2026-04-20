@@ -50,7 +50,7 @@ def validate_elements(
 
     valid_count = sum(1 for d in detections if d["is_valid"])
     logger.info(
-        "CrossElementValidator: %d/%d detections passed all checks",
+        "CrossElementValidator: {}/{} detections passed all checks",
         valid_count, len(detections),
     )
     return detections

@@ -37,7 +37,7 @@ class ConnectionManager:
     async def send_progress(self, job_id: str, data: dict):
         """Send progress update to all connected clients for a job"""
         if job_id in self.active_connections:
-            message = json.dumps(data)
+            message = json.dumps(data, default=str)
             
             for connection in self.active_connections[job_id].copy():
                 try:

@@ -55,7 +55,7 @@ def enforce_rules(
     violations = sum(1 for d in detections if not d["is_dfma_compliant"])
     orphans = sum(1 for d in detections if d["is_orphan"])
     logger.info(
-        "ValidationAgent: %d DfMA violations, %d orphan elements (of %d total)",
+        "ValidationAgent: {} DfMA violations, {} orphan elements (of {} total)",
         violations, orphans, len(detections),
     )
     return detections

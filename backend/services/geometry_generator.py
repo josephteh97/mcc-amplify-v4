@@ -67,14 +67,15 @@ def normalize_column_dimensions(
             diameter = max(ann_w, ann_d)
             nearest = _nearest(diameter, STANDARD_CIRCULAR_COLUMN_DIAMETERS)
             annotated_dimensions = (float(nearest), float(nearest))
-            print(f"  [CIRCULAR] diameter={diameter} → snapped to {nearest}")
+            if nearest != diameter:
+                logger.debug(f"[CIRCULAR] diameter={diameter} → snapped to {nearest}")
 
         elif column_shape == "square":
             if ann_w != ann_d:
                 avg = (ann_w + ann_d) / 2
                 nearest = _nearest(avg, STANDARD_SQUARE_COLUMN_SIZES)
                 annotated_dimensions = (float(nearest), float(nearest))
-                print(f"  [SQUARE] {ann_w}x{ann_d} mismatch → corrected to {nearest}x{nearest}")
+                logger.debug(f"[SQUARE] {ann_w}x{ann_d} mismatch → corrected to {nearest}x{nearest}")
             else:
                 nearest = _nearest(ann_w, STANDARD_SQUARE_COLUMN_SIZES)
                 annotated_dimensions = (float(nearest), float(nearest))
@@ -84,17 +85,19 @@ def normalize_column_dimensions(
             if diff == 0:
                 nearest = _nearest(ann_w, STANDARD_SQUARE_COLUMN_SIZES)
                 annotated_dimensions = (float(nearest), float(nearest))
-                print(f"  [RECT→SQUARE] {ann_w}x{ann_d} → {nearest}x{nearest}")
+                if nearest != ann_w:
+                    logger.debug(f"[RECT→SQUARE] {ann_w}x{ann_d} → {nearest}x{nearest}")
             elif diff <= 100:
                 avg = (ann_w + ann_d) / 2
                 nearest = _nearest(avg, STANDARD_SQUARE_COLUMN_SIZES)
                 annotated_dimensions = (float(nearest), float(nearest))
-                print(f"  [RECT→SQUARE] {ann_w}x{ann_d} diff={diff}mm → {nearest}x{nearest}")
+                logger.debug(f"[RECT→SQUARE] {ann_w}x{ann_d} diff={diff}mm → {nearest}x{nearest}")
             else:
                 w_rounded = round(ann_w / 50) * 50
                 d_rounded = round(ann_d / 50) * 50
                 annotated_dimensions = (float(w_rounded), float(d_rounded))
-                print(f"  [RECTANGULAR] {ann_w}x{ann_d} → {w_rounded}x{d_rounded}")
+                if w_rounded != ann_w or d_rounded != ann_d:
+                    logger.debug(f"[RECTANGULAR] {ann_w}x{ann_d} → {w_rounded}x{d_rounded}")
 
     # Priority 1: validated annotated dimensions
     if annotated_dimensions is not None:
@@ -566,6 +569,7 @@ class GeometryGenerator:
                 "level":       "Level 0",
                 "top_level":   "Level 1",
             })
+
         return column_params
 
     def _build_room_parameters(

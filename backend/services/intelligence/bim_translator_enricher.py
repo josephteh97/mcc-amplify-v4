@@ -44,7 +44,7 @@ def enrich_recipe(recipe: dict, detections: list[dict]) -> dict:
 
     if len(columns_in_recipe) != len(detections):
         logger.warning(
-            "BIMTranslatorEnricher: recipe has %d columns but %d detections — "
+            "BIMTranslatorEnricher: recipe has {} columns but {} detections — "
             "enrichment skipped to avoid index mismatch",
             len(columns_in_recipe), len(detections),
         )
@@ -55,7 +55,7 @@ def enrich_recipe(recipe: dict, detections: list[dict]) -> dict:
             recipe_col[key] = det.get(key)
 
     logger.info(
-        "BIMTranslatorEnricher: enriched %d column entries in Revit recipe",
+        "BIMTranslatorEnricher: enriched {} column entries in Revit recipe",
         len(columns_in_recipe),
     )
     return recipe

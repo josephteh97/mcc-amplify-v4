@@ -127,6 +127,7 @@ async def _run_pipeline_task_inner(job_id: str, file_path: str, project_name: Op
             "job_id":   job_id,
             "progress": 100,
             "message":  "Processing complete — your RVT and glTF files are ready.",
+            "result":   result,
         })
     except Exception as e:
         logger.error(f"Pipeline failed for job {job_id}: {e}")

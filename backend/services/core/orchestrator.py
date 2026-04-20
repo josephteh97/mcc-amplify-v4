@@ -335,6 +335,26 @@ class PipelineOrchestrator:
             if _column_dets:
                 recipe = enrich_recipe(recipe, _column_dets)
 
+            # ── Deduplicate columns that snapped to the same grid intersection ─
+            # Done AFTER enrich_recipe so intelligence metadata is already merged.
+            # Revit rejects identical-location instances ("identical instances in
+            # the same place" warning). Round to 1 dp to handle float near-equals.
+            _cols = recipe.get("columns", [])
+            if _cols:
+                _seen: set = set()
+                _unique = []
+                for _c in _cols:
+                    _loc = _c.get("location", {})
+                    _key = (round(_loc.get("x", 0), 1), round(_loc.get("y", 0), 1))
+                    if _key not in _seen:
+                        _seen.add(_key)
+                        _unique.append(_c)
+                if len(_unique) < len(_cols):
+                    logger.info(
+                        f"Deduplicated {len(_cols)} → {len(_unique)} columns after grid snap"
+                    )
+                    recipe["columns"] = _unique
+
             # ── Pre-clash validation ───────────────────────────────────────────
             validation_warnings = self._validate_recipe(recipe)
             if validation_warnings:
