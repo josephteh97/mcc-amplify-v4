@@ -1795,7 +1795,8 @@ namespace RevitModelBuilderAddin
                          })
                      ?? throw new Exception("Failed to deserialise transaction JSON.");
             Log($"JSON OK — levels:{tx.Levels?.Count} grids:{tx.Grids?.Count} " +
-                $"columns:{tx.Columns?.Count} walls:{tx.Walls?.Count}");
+                $"columns:{tx.Columns?.Count} walls:{tx.Walls?.Count} " +
+                $"framing:{tx.StructuralFraming?.Count} slabs:{tx.Slabs?.Count}");
 
             string template = FindTemplate();
             if (template == null)
@@ -1818,11 +1819,12 @@ namespace RevitModelBuilderAddin
                     }
 
                     t.Start();
-                    Log("CreateLevels...");   CreateLevels (doc, tx.Levels);
-                    Log("CreateGrids...");    CreateGrids  (doc, tx.Grids);
-                    Log("CreateColumns..."); CreateColumns(doc, tx.Columns);
-                    Log("CreateWalls...");    CreateWalls  (doc, tx.Walls);
-                    Log("CreateFloors...");  CreateFloors (doc, tx.Floors);
+                    Log("CreateLevels...");           CreateLevels          (doc, tx.Levels);
+                    Log("CreateGrids...");            CreateGrids           (doc, tx.Grids);
+                    Log("CreateColumns...");          CreateColumns         (doc, tx.Columns);
+                    Log("CreateWalls...");            CreateWalls           (doc, tx.Walls);
+                    Log("CreateSlabs...");             CreateSlabs           (doc, tx.Slabs);
+                    Log("CreateStructuralFraming..."); CreateStructuralFraming(doc, tx.StructuralFraming);
                     Log("Committing...");
                     t.Commit();
                     Log("Transaction committed.");
@@ -2829,6 +2831,66 @@ namespace RevitModelBuilderAddin
         // 4. Walls
         // ------------------------------------------------------------------
 
+        // ------------------------------------------------------------------
+        // 4b. Structural Framing (beams)
+        // ------------------------------------------------------------------
+
+        private void CreateStructuralFraming(Document doc, List<FramingItem> framings)
+        {
+            if (framings == null || framings.Count == 0) return;
+
+            // Prefer a CJY_-branded concrete beam family; fall back to any StructuralFraming symbol.
+            FamilySymbol beamSym = new FilteredElementCollector(doc)
+                .OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
+                .Where(s => s.Category?.Id?.IntegerValue ==
+                            (int)BuiltInCategory.OST_StructuralFraming)
+                .OrderByDescending(s => s.FamilyName.StartsWith("CJY_",
+                    StringComparison.OrdinalIgnoreCase))
+                .FirstOrDefault();
+
+            if (beamSym == null)
+            {
+                Log("[WARN] No structural framing family found — beams skipped.");
+                return;
+            }
+            if (!beamSym.IsActive)
+            {
+                try { beamSym.Activate(); doc.Regenerate(); }
+                catch (Exception ex)
+                {
+                    Log($"[WARN] Beam symbol activation failed: {ex.Message}");
+                    return;
+                }
+            }
+
+            int placed = 0, skipped = 0;
+            foreach (var beam in framings)
+            {
+                if (beam.StartPoint == null || beam.EndPoint == null) { skipped++; continue; }
+
+                XYZ start = Pt(beam.StartPoint);
+                XYZ end   = Pt(beam.EndPoint);
+                if (start.DistanceTo(end) < 1e-6) { skipped++; continue; }
+
+                Level level = GetLevel(doc, beam.Level ?? "Level 0");
+                if (level == null) { skipped++; continue; }
+
+                try
+                {
+                    var line = Line.CreateBound(start, end);
+                    doc.Create.NewFamilyInstance(
+                        line, beamSym, level, StructuralType.Beam);
+                    placed++;
+                }
+                catch (Exception ex)
+                {
+                    Log($"[WARN] Beam {beam.Id} placement failed: {ex.Message}");
+                    skipped++;
+                }
+            }
+            Log($"Beams: {placed} placed, {skipped} skipped.");
+        }
+
         private void CreateWalls(Document doc, List<WallItem> walls)
         {
             if (walls == null || walls.Count == 0) return;
@@ -2853,28 +2915,28 @@ namespace RevitModelBuilderAddin
         // 5. Floors
         // ------------------------------------------------------------------
 
-        private void CreateFloors(Document doc, List<FloorItem> floors)
+        private void CreateSlabs(Document doc, List<SlabItem> slabs)
         {
-            if (floors == null || floors.Count == 0) return;
+            if (slabs == null || slabs.Count == 0) return;
             FloorType defaultFloorType = new FilteredElementCollector(doc)
                 .OfClass(typeof(FloorType)).Cast<FloorType>().FirstOrDefault();
             if (defaultFloorType == null) return;
 
-            foreach (var fl in floors)
+            foreach (var sl in slabs)
             {
-                if (fl.BoundaryPoints == null || fl.BoundaryPoints.Count < 3) continue;
-                Level level = GetLevel(doc, fl.Level ?? "Level 0");
+                if (sl.BoundaryPoints == null || sl.BoundaryPoints.Count < 3) continue;
+                Level level = GetLevel(doc, sl.Level ?? "Level 0");
                 if (level == null) continue;
 
                 var loop = new CurveLoop();
-                int n = fl.BoundaryPoints.Count;
+                int n = sl.BoundaryPoints.Count;
                 for (int i = 0; i < n; i++)
                 {
-                    var p1 = fl.BoundaryPoints[i];
-                    var p2 = fl.BoundaryPoints[(i + 1) % n];
+                    var p1 = sl.BoundaryPoints[i];
+                    var p2 = sl.BoundaryPoints[(i + 1) % n];
                     loop.Append(Line.CreateBound(
-                        new XYZ(p1.X * MM, p1.Y * MM, 0.0),
-                        new XYZ(p2.X * MM, p2.Y * MM, 0.0)));
+                        new XYZ(p1.X * MM, p1.Y * MM, sl.Elevation * MM),
+                        new XYZ(p2.X * MM, p2.Y * MM, sl.Elevation * MM)));
                 }
                 Floor.Create(doc, new List<CurveLoop> { loop }, defaultFloorType.Id, level.Id);
             }
@@ -2911,11 +2973,23 @@ namespace RevitModelBuilderAddin
 
     public class RevitTransaction
     {
-        [JsonProperty("levels")]  public List<LevelItem>  Levels  { get; set; } = new List<LevelItem>();
-        [JsonProperty("grids")]   public List<GridItem>   Grids   { get; set; } = new List<GridItem>();
-        [JsonProperty("columns")] public List<ColumnItem> Columns { get; set; } = new List<ColumnItem>();
-        [JsonProperty("walls")]   public List<WallItem>   Walls   { get; set; } = new List<WallItem>();
-        [JsonProperty("floors")]  public List<FloorItem>  Floors  { get; set; } = new List<FloorItem>();
+        [JsonProperty("levels")]             public List<LevelItem>   Levels            { get; set; } = new List<LevelItem>();
+        [JsonProperty("grids")]              public List<GridItem>    Grids             { get; set; } = new List<GridItem>();
+        [JsonProperty("columns")]            public List<ColumnItem>  Columns           { get; set; } = new List<ColumnItem>();
+        [JsonProperty("walls")]              public List<WallItem>    Walls             { get; set; } = new List<WallItem>();
+        [JsonProperty("slabs")]              public List<SlabItem>    Slabs             { get; set; } = new List<SlabItem>();
+        [JsonProperty("structural_framing")] public List<FramingItem> StructuralFraming { get; set; } = new List<FramingItem>();
+    }
+
+    public class FramingItem
+    {
+        [JsonProperty("id")]          public string    Id         { get; set; } = "";
+        [JsonProperty("start_point")] public PointData StartPoint { get; set; } = new PointData();
+        [JsonProperty("end_point")]   public PointData EndPoint   { get; set; } = new PointData();
+        [JsonProperty("width")]       public double    Width      { get; set; } = 200;
+        [JsonProperty("depth")]       public double    Depth      { get; set; } = 500;
+        [JsonProperty("level")]       public string    Level      { get; set; } = "Level 0";
+        [JsonProperty("family_type")] public string    FamilyType { get; set; } = "";
     }
 
     public class LevelItem
@@ -2955,12 +3029,13 @@ namespace RevitModelBuilderAddin
         [JsonProperty("is_structural")] public bool      IsStructural { get; set; }
     }
 
-    public class FloorItem
+    public class SlabItem
     {
         [JsonProperty("id")]              public string          Id             { get; set; } = "";
         [JsonProperty("boundary_points")] public List<PointData> BoundaryPoints { get; set; } = new List<PointData>();
+        [JsonProperty("thickness")]       public double          Thickness      { get; set; } = 200;
+        [JsonProperty("elevation")]       public double          Elevation      { get; set; } = 0;
         [JsonProperty("level")]           public string          Level          { get; set; } = "Level 0";
-        [JsonProperty("is_structural")]   public bool            IsStructural   { get; set; } = true;
     }
 
     public class PointData

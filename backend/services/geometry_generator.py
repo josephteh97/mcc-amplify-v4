@@ -17,6 +17,8 @@ Level 1  (First Floor,  elevation = 3000 mm)
 are always created.  Grid lines are placed at Level 0.
 """
 
+import os
+
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from loguru import logger
@@ -152,6 +154,8 @@ class GeometryGenerator:
         # Stored as an instance attribute so apply_profile() can raise it per-job
         # without mutating the class and affecting other GeometryGenerator instances.
         self._min_column_mm           = 800.0
+        # Default beam cross-section dimensions — 800×800 matches column default.
+        self.default_beam_depth       = float(os.getenv("DEFAULT_BEAM_DEPTH_MM", "800"))
 
     def apply_profile(self, profile: dict) -> None:
         """
@@ -215,27 +219,24 @@ class GeometryGenerator:
             "walls":              self._build_wall_parameters(
                                       enriched_data.get("walls", []), grid_info),
             "structural_framing": self._build_structural_framing_parameters(
-                                      enriched_data.get("structural_framing", [])),
+                                      enriched_data.get("structural_framing", []), grid_info),
             "stairs":             self._build_stairs_parameters(
                                       enriched_data.get("stairs", [])),
             "lifts":              self._build_lift_parameters(
                                       enriched_data.get("lifts", [])),
-            **self._build_slabs(enriched_data.get("rooms", []), grid_info),
-
-            # Doors and windows removed from structural pipeline.
-            # Kept as empty arrays so the Revit Add-in JSON schema stays valid.
-            "doors":   [],
-            "windows": [],
+            "slabs":  self._build_slab_parameters(
+                          enriched_data.get("slabs", []), grid_info),
 
             "metadata": enriched_data.get("metadata", {}),
         }
 
         logger.info(
             f"Generated: {len(geometry['columns'])} columns, "
-            f"{len(geometry['walls'])} walls, "
             f"{len(geometry['structural_framing'])} framing, "
+            f"{len(geometry['walls'])} walls, "
             f"{len(geometry['stairs'])} stairs, "
             f"{len(geometry['lifts'])} lifts, "
+            f"{len(geometry['slabs'])} slabs, "
             f"{len(geometry['grids'])} grid lines, "
             f"levels: {[l['name'] for l in geometry['levels']]}"
         )
@@ -579,8 +580,66 @@ class GeometryGenerator:
     # Structural element stubs — populated once detection agents are trained
     # ------------------------------------------------------------------
 
-    def _build_structural_framing_parameters(self, elements: List[Dict]) -> List[Dict]:
-        return []
+    def _build_structural_framing_parameters(
+        self, elements: List[Dict], grid_info: Dict
+    ) -> List[Dict]:
+        """Convert detected beam bboxes to Revit StructuralFraming recipe entries.
+
+        Beam axis is inferred from the long dimension of the YOLO bbox.
+        Cross-section width = short bbox dimension (mm); depth = DEFAULT_BEAM_DEPTH_MM (800 mm).
+        Z is placed at the top of the storey (= default_wall_height) so beams
+        sit flush with the column tops.
+        """
+        params: List[Dict] = []
+        z_mm = float(self.default_wall_height)  # beams sit at column-top elevation
+
+        for elem in elements:
+            bbox = elem.get("bbox")
+            if not bbox or len(bbox) < 4:
+                continue
+
+            x1_px, y1_px, x2_px, y2_px = bbox[0], bbox[1], bbox[2], bbox[3]
+
+            x1_mm, y1_mm = self._px_to_world(x1_px, y1_px, grid_info)
+            x2_mm, y2_mm = self._px_to_world(x2_px, y2_px, grid_info)
+
+            dx = abs(x2_mm - x1_mm)
+            dy = abs(y2_mm - y1_mm)
+
+            if dx >= dy:
+                # Beam spans in X; cross-section width = Y extent
+                cy = (y1_mm + y2_mm) / 2.0
+                start = {"x": min(x1_mm, x2_mm), "y": cy,  "z": z_mm}
+                end   = {"x": max(x1_mm, x2_mm), "y": cy,  "z": z_mm}
+                width_mm = dy
+            else:
+                # Beam spans in Y; cross-section width = X extent
+                cx = (x1_mm + x2_mm) / 2.0
+                start = {"x": cx, "y": min(y1_mm, y2_mm), "z": z_mm}
+                end   = {"x": cx, "y": max(y1_mm, y2_mm), "z": z_mm}
+                width_mm = dx
+
+            span = abs(end["x"] - start["x"]) + abs(end["y"] - start["y"])
+            if span < 10.0:   # skip degenerate detections (< 10 mm span)
+                continue
+
+            # Fall back to 800 mm (matching column default) when bbox gives no usable width
+            width_mm  = round(width_mm, 1) if width_mm >= 100.0 else self.default_beam_depth
+            depth_mm  = self.default_beam_depth
+            max_dim   = max(width_mm, depth_mm)
+            min_dim   = min(width_mm, depth_mm)
+
+            params.append({
+                "id":          elem.get("id"),
+                "start_point": start,
+                "end_point":   end,
+                "width":       round(width_mm, 1),
+                "depth":       round(depth_mm, 1),
+                "level":       "Level 0",
+                "family_type": f"Beam{int(max_dim)}x{int(min_dim)}mm",
+            })
+
+        return params
 
     def _build_stairs_parameters(self, elements: List[Dict]) -> List[Dict]:
         return []
@@ -588,70 +647,32 @@ class GeometryGenerator:
     def _build_lift_parameters(self, elements: List[Dict]) -> List[Dict]:
         return []
 
-    def _build_room_parameters(
-        self, rooms_2d: List[Dict], grid_info: Dict
+    def _build_slab_parameters(
+        self, slabs_2d: List[Dict], grid_info: Dict
     ) -> List[Dict]:
-        """Generate parameters for Revit Room creation."""
-        room_params = []
-        for room in rooms_2d:
-            center = room.get("center", [0.0, 0.0])
-            cx_mm, cy_mm = self._px_to_world(center[0], center[1], grid_info)
+        """Generate Revit slab parameters from SlabDetectionAgent output.
 
-            room_params.append({
-                "id":            room.get("id"),
-                "name":          room.get("name", "Unnamed Room"),
-                "purpose":       room.get("purpose", "General"),
-                "center_point":  {"x": cx_mm, "y": cy_mm, "z": 0.0},
-                "area_sqm":      room.get("area_sqm", 0),
-                "target_height": room.get("ceiling_height", self.default_wall_height),
-                "level":         "Level 0",
-            })
-        return room_params
-
-    def _build_slabs(self, rooms_2d: List[Dict], grid_info: Dict) -> Dict:
+        Each detected slab bbox becomes a flat boundary polygon.
+        Returns [] until SlabDetectionAgent is trained.
         """
-        Generate floor and ceiling slab parameters in a single pass over rooms.
-
-        Uses explicit polygon boundary when available; falls back to the YOLO
-        bounding-box corners so every detected room still gets a slab.
-        Returns {"floors": [...], "ceilings": [...]}.
-        """
-        floors: List[Dict] = []
-        ceilings: List[Dict] = []
-
-        for i, room in enumerate(rooms_2d):
-            if "boundary" in room:
-                boundary_px = room["boundary"]
-            else:
-                bbox = room.get("bbox")
-                if not bbox or len(bbox) < 4:
-                    logger.warning(
-                        f"Room {i} ({room.get('name', '?')}): no 'boundary' polygon and no "
-                        "valid 'bbox' — floor/ceiling slabs skipped."
-                    )
-                    continue
-                x1, y1, x2, y2 = bbox[0], bbox[1], bbox[2], bbox[3]
-                boundary_px = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
-
+        params: List[Dict] = []
+        for i, slab in enumerate(slabs_2d):
+            bbox = slab.get("bbox")
+            if not bbox or len(bbox) < 4:
+                continue
+            x1, y1, x2, y2 = bbox[0], bbox[1], bbox[2], bbox[3]
             boundary_mm = [
                 {"x": xm, "y": ym}
-                for xm, ym in (self._px_to_world(pt[0], pt[1], grid_info) for pt in boundary_px)
+                for xm, ym in (
+                    self._px_to_world(pt[0], pt[1], grid_info)
+                    for pt in [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+                )
             ]
-            ceiling_elev = room.get("ceiling_height", self.default_wall_height)
-
-            floors.append({
-                "id":              f"floor_{i}",
+            params.append({
+                "id":              slab.get("id", f"slab_{i}"),
                 "boundary_points": boundary_mm,
                 "thickness":       self.default_floor_thickness,
                 "elevation":       0.0,
                 "level":           "Level 0",
             })
-            ceilings.append({
-                "id":              f"ceiling_{i}",
-                "boundary_points": boundary_mm,
-                "thickness":       20,
-                "elevation":       ceiling_elev,
-                "level":           "Level 0",
-            })
-
-        return {"floors": floors, "ceilings": ceilings}
+        return params

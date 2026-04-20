@@ -50,17 +50,17 @@ class GltfExporter:
                 m.visual.face_colors = [135, 206, 235, 200]  # sky-blue
                 scene.add_geometry(m, geom_name=f"window_{idx}")
 
-        for idx, slab in enumerate(geometry_data.get("floors", [])):
+        for idx, slab in enumerate(geometry_data.get("slabs", [])):
             m = self._slab_mesh(slab)
             if m is not None:
                 m.visual.face_colors = [220, 210, 190, 255]  # warm beige
-                scene.add_geometry(m, geom_name=f"floor_{idx}")
+                scene.add_geometry(m, geom_name=f"slab_{idx}")
 
-        for idx, slab in enumerate(geometry_data.get("ceilings", [])):
-            m = self._slab_mesh(slab)
+        for idx, beam in enumerate(geometry_data.get("structural_framing", [])):
+            m = self._beam_mesh(beam)
             if m is not None:
-                m.visual.face_colors = [240, 240, 240, 220]  # off-white
-                scene.add_geometry(m, geom_name=f"ceiling_{idx}")
+                m.visual.face_colors = [90, 75, 60, 255]    # dark concrete brown
+                scene.add_geometry(m, geom_name=f"beam_{idx}")
 
         if len(scene.geometry) == 0:
             logger.warning("No geometry produced — adding placeholder floor plane")
@@ -75,34 +75,40 @@ class GltfExporter:
 
         scene.export(output_path)
         logger.info(
-            f"glTF export complete — walls:{len(geometry_data.get('walls', []))} "
-            f"doors:{len(geometry_data.get('doors', []))} "
-            f"windows:{len(geometry_data.get('windows', []))} "
+            f"glTF export complete — "
             f"columns:{len(geometry_data.get('columns', []))} "
-            f"floors:{len(geometry_data.get('floors', []))}"
+            f"framing:{len(geometry_data.get('structural_framing', []))} "
+            f"walls:{len(geometry_data.get('walls', []))} "
+            f"slabs:{len(geometry_data.get('slabs', []))}"
         )
         return output_path
 
     # ── Mesh builders ──────────────────────────────────────────────────────────
 
+    def _axis_box_mesh(self, start: dict, end: dict, cross_w: float, cross_h: float, z_center: float):
+        """Shared builder: oriented box along a start→end axis at the given z centre."""
+        dx   = end["x"] - start["x"]
+        dy   = end["y"] - start["y"]
+        span = float(np.sqrt(dx ** 2 + dy ** 2))
+        if span < 1.0:
+            return None
+        angle = float(np.arctan2(dy, dx))
+        cx    = (start["x"] + end["x"]) / 2
+        cy    = (start["y"] + end["y"]) / 2
+        box   = trimesh.creation.box(extents=[span, cross_w, cross_h])
+        T     = trimesh.transformations.translation_matrix([cx, cy, z_center])
+        R     = trimesh.transformations.rotation_matrix(angle, [0, 0, 1])
+        box.apply_transform(trimesh.transformations.concatenate_matrices(T, R))
+        return box
+
     def _wall_mesh(self, wall: dict):
         try:
-            s, e = wall["start_point"], wall["end_point"]
-            dx = e["x"] - s["x"]
-            dy = e["y"] - s["y"]
-            length = float(np.sqrt(dx ** 2 + dy ** 2))
-            if length < 1.0:
-                return None
-            angle = float(np.arctan2(dy, dx))
             thickness = float(wall.get("thickness", 200))
             height    = float(wall.get("height", 2800))
-            box = trimesh.creation.box(extents=[length, thickness, height])
-            cx  = (s["x"] + e["x"]) / 2
-            cy  = (s["y"] + e["y"]) / 2
-            T   = trimesh.transformations.translation_matrix([cx, cy, height / 2])
-            R   = trimesh.transformations.rotation_matrix(angle, [0, 0, 1])
-            box.apply_transform(trimesh.transformations.concatenate_matrices(T, R))
-            return box
+            return self._axis_box_mesh(
+                wall["start_point"], wall["end_point"],
+                thickness, height, height / 2,
+            )
         except Exception as exc:
             logger.debug(f"Wall mesh skipped: {exc}")
             return None
@@ -161,4 +167,18 @@ class GltfExporter:
             return mesh
         except Exception as exc:
             logger.debug(f"Slab mesh skipped: {exc}")
+            return None
+
+    def _beam_mesh(self, beam: dict):
+        """Structural beam — box extruded along the start→end axis."""
+        try:
+            width = float(beam.get("width", 200))
+            depth = float(beam.get("depth", 800))
+            z     = float(beam["start_point"].get("z", 2800))
+            return self._axis_box_mesh(
+                beam["start_point"], beam["end_point"],
+                width, depth, z - depth / 2,
+            )
+        except Exception as exc:
+            logger.debug(f"Beam mesh skipped: {exc}")
             return None

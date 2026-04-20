@@ -993,7 +993,7 @@ If you cannot determine a safe correction, return:
         if not isinstance(validated_elements, dict):
             validated_elements = {}
 
-        for key in ("walls", "doors", "windows", "rooms", "columns"):
+        for key in ("walls", "columns", "structural_framing", "stairs", "lifts", "slabs"):
             validated = validated_elements.get(key, [])
             if not isinstance(validated, list):
                 validated = []
