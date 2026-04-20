@@ -1,20 +1,25 @@
 """
-Core Orchestrator: Manages the Dual-Track Pipeline
+Core Orchestrator: Agent-Based Structural Detection Pipeline
 
 Stages executed:
-  1. Security check            (services/security)
-  2. Dual-Track PDF processing  (services/pdf_processing)
-       Track A – VectorProcessor  (precise geometry + text for grid detection)
-       Track B – StreamingProcessor (raster render) + inline YOLO detection
-  3. Hybrid Fusion              (services/fusion)
-  4. Grid Detection             (services/grid_detector — NEVER reads scale text)
-  5. Semantic AI analysis       (services/semantic_analyzer)
-  6. 3D Geometry generation     (services/geometry_generator)
-  7. BIM Export                 (services/exporters)
+  1. Security check       (services/security)
+  2. Source data          (VectorProcessor + StreamingProcessor — parallel I/O)
+  3. Parallel agents      (7 detection agents via asyncio.gather)
+       GridDetectionAgent          — structural grid from vector geometry
+       ColumnDetectionAgent        — YOLO tiling inference
+       WallDetectionAgent          — vector path analysis (via fusion)
+       StructuralFramingDetectionAgent — stub, model pending
+       StairsDetectionAgent        — stub, model pending
+       LiftDetectionAgent          — stub, model pending
+       SlabDetectionAgent          — stub, model pending
+  4. Detection Merger     (HybridFusionPipeline + grid pixel alignment)
+  4c. Intelligence layer  (TypeResolver → CrossElementValidator → ValidationAgent)
+  5. BIM Enrichment       (BIMTranslatorEnricher + element deduplication)
+  6. 3D Geometry          (GeometryGenerator — px → mm → Revit recipe)
+  7. BIM Export           (RvtExporter + GltfExporter)
 
-NOTE: Scale is derived exclusively from the structural grid lines and their
-dimension annotations.  The "scale" text printed on a floor plan is intentionally
-ignored because it is often unreliable.
+Scale is derived exclusively from structural grid lines and dimension annotations.
+Scale text printed on the drawing (e.g. "1:100") is intentionally ignored.
 """
 
 import asyncio
@@ -25,22 +30,26 @@ from pathlib import Path
 from typing import Callable, Optional
 from loguru import logger
 
-# Extracted modules
 from backend.services.column_annotator import annotate_columns
-from backend.services.yolo_runner import load_yolo, run_yolo
+from backend.services.yolo_runner import load_yolo
 
-# ── Dual-track infrastructure ──────────────────────────────────────────────────
 from backend.services.security.secure_renderer import SecurePDFRenderer, ResourceMonitor
 from backend.services.pdf_processing.processors import VectorProcessor, StreamingProcessor
 from backend.services.fusion.pipeline import HybridFusionPipeline
-
-# ── AI logic services ─────────────────────────────────────────────────────────
-from backend.services.grid_detector import GridDetector, GridDimensionMissingError
+from backend.services.grid_detector import GridDetector
 from backend.services.semantic_analyzer import SemanticAnalyzer
 from backend.services.geometry_generator import GeometryGenerator
 from backend.services.exporters.rvt_exporter import RvtExporter
 from backend.services.exporters.gltf_exporter import GltfExporter
 from backend.services.vision_comparator import VisionComparator
+
+# ── Detection agents ──────────────────────────────────────────────────────────
+from backend.services.detection_agents import (
+    DetectionContext,
+    GridDetectionAgent,
+    YoloDetectionAgent,
+    UntrainedDetectionAgent,
+)
 
 # ── Intelligence layer ────────────────────────────────────────────────────────
 from backend.services.intelligence.type_resolver import resolve_types
@@ -54,9 +63,8 @@ from backend.chat_agent.pipeline_observer import observer
 
 class PipelineOrchestrator:
     """
-    Central brain of the Hybrid AI System.
-    Orchestrates:
-      Security → PDF Processing → YOLO → Fusion → Grid Detection → AI → Geometry → Export
+    Orchestrates: Security → Source Data → Parallel Agents → Merger
+                  → Intelligence → BIM Enrichment → Geometry → Export
     """
 
     def __init__(self):
@@ -71,9 +79,23 @@ class PipelineOrchestrator:
         self.gltf_exporter    = GltfExporter()
         self.vision_cmp       = VisionComparator()
 
-        # Load YOLO model (weights at ml/weights/column-detect.pt)
-        yolo_path = Path(__file__).parent.parent.parent / "ml" / "weights" / "column-detect.pt"
-        self.yolo = load_yolo(yolo_path)
+        weights = Path(__file__).parent.parent.parent / "ml" / "weights"
+
+        # ── Detection agents (one per structural element type) ────────────────
+        self.grid_agent               = GridDetectionAgent(self.grid_detector)
+        self.column_agent             = YoloDetectionAgent(
+            load_yolo(weights / "column-detect.pt"), "column",
+        )
+        self.structural_framing_agent = YoloDetectionAgent(
+            load_yolo(weights / "structural-framing.pt"), "structural_framing",
+            min_squareness=0.0,   # beams are rectangular, not square
+            max_side=300,
+        )
+        # Untrained agents return [] until a model is available
+        self.wall_agent  = UntrainedDetectionAgent("wall")    # walls extracted by fusion pipeline
+        self.stairs_agent = UntrainedDetectionAgent("stairs")
+        self.lift_agent   = UntrainedDetectionAgent("lift")
+        self.slab_agent   = UntrainedDetectionAgent("slab")
 
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -111,27 +133,15 @@ class PipelineOrchestrator:
             safe_dpi = secure_context.get("dpi", 150)
             emit(observer.stage_completed(job_id, 1, {"dpi": safe_dpi, "method": secure_context.get("method")}))
 
-            # ── Stage 2: Dual-track PDF extraction (parallel) ─────────────────
-            # Track A (vector geometry), multi-page schedule text scan, and
-            # Track B (300 DPI raster render) are all I/O-bound PDF reads
-            # that don't depend on each other.  Run them concurrently via
-            # asyncio.gather to cut PDF extraction wall-time roughly in half
-            # on multi-page drawing sets.  300 DPI keeps 800 mm columns at
-            # 1:400 at ~24 px — the scale YOLO was trained on; the renderer's
-            # MAX_PIXELS cap auto-reduces DPI for A0 sheets (~127 DPI) and
-            # run_yolo handles that by upsampling.
-            emit(observer.stage_started(job_id, 2, "Dual-track extraction (vector + raster)"))
-            progress(15, "Dual-track: vector + schedule scan + raster render…")
+            # ── Stage 2: Source data acquisition (parallel I/O) ───────────────
+            emit(observer.stage_started(job_id, 2, "Source data acquisition"))
+            progress(15, "Vector extraction + raster render…")
             vector_data, extra_pages, image_data = await asyncio.gather(
                 asyncio.to_thread(self.vector_processor.extract, pdf_path),
                 asyncio.to_thread(self.vector_processor.extract_all_pages_text, pdf_path),
                 self.stream_processor.render_safe(pdf_path, dpi=300),
             )
 
-            # ── Scanned PDF check ─────────────────────────────────────────────
-            # A PDF with fewer than 50 vector paths is almost certainly a scanned
-            # raster image.  Grid detection will fall back to a uniform grid and
-            # coordinate accuracy will be significantly reduced.
             path_count = len(vector_data.get("paths", []))
             is_scanned = path_count < 50
             if is_scanned:
@@ -141,11 +151,6 @@ class PipelineOrchestrator:
                 )
                 emit(observer.warn(job_id, "scanned_pdf", {"vector_path_count": path_count}))
 
-            # ── Multi-page schedule merge ─────────────────────────────────────
-            # Structural drawing sets often put the column schedule on a
-            # separate page.  Pass 1 of the column annotation step uses the
-            # type-mark → dimension entries harvested above so it still works
-            # even when the floor plan is on page 0.
             schedule_page_texts = [
                 item["text"]
                 for page in extra_pages if page["is_schedule"]
@@ -155,80 +160,96 @@ class PipelineOrchestrator:
                 n_sched = sum(1 for p in extra_pages if p["is_schedule"])
                 logger.info(
                     f"Cross-page schedule: {len(schedule_page_texts)} text items "
-                    f"from {n_sched} schedule page(s) merged into annotation pass."
+                    f"from {n_sched} schedule page(s) merged."
                 )
-
             emit(observer.stage_completed(job_id, 2, {
                 "vector_paths": path_count,
                 "schedule_pages": sum(1 for p in extra_pages if p["is_schedule"]),
                 "is_scanned": is_scanned,
             }))
 
-            # ── Stage 3: YOLO element detection on rendered image ─────────────
-            emit(observer.stage_started(job_id, 3, "YOLO element detection"))
-            progress(35, "Detecting elements (YOLO)…")
-            ml_detections = run_yolo(self.yolo, image_data)
-
-            # ── Checkpoint: save render + detections for YOLO training ─────────
+            # ── Stage 3: Parallel detection agents ────────────────────────────
+            emit(observer.stage_started(job_id, 3, "Parallel element detection agents"))
+            progress(30, "Running element detection agents…")
+            ctx = DetectionContext(
+                pdf_path=pdf_path,
+                image=image_data["image"],
+                image_dpi=image_data.get("dpi", safe_dpi),
+                vector_data=vector_data,
+                schedule_texts=schedule_page_texts,
+            )
+            (
+                grid_info,
+                col_dets,
+                wall_dets,
+                sf_dets,
+                stair_dets,
+                lift_dets,
+                slab_dets,
+            ) = await asyncio.gather(
+                self.grid_agent.detect_grid(ctx),
+                self.column_agent.detect(ctx),
+                self.wall_agent.detect(ctx),
+                self.structural_framing_agent.detect(ctx),
+                self.stairs_agent.detect(ctx),
+                self.lift_agent.detect(ctx),
+                self.slab_agent.detect(ctx),
+            )
             self._save_job_checkpoint(job_id, "render.jpg", image_data["image"])
-            self._save_job_checkpoint(job_id, "px_detections.json", ml_detections)
+            self._save_job_checkpoint(job_id, "px_detections.json", col_dets)
 
-            # Report detection counts by type for the chat agent
             _det_counts: dict[str, int] = {}
-            for _d in ml_detections:
-                _t = _d.get("type", "unknown")
-                _det_counts[_t] = _det_counts.get(_t, 0) + 1
-            for _t, _n in _det_counts.items():
-                emit(observer.element_detected(job_id, _t, _n))
-            emit(observer.stage_completed(job_id, 3, {"yolo_total": len(ml_detections), "by_type": _det_counts}))
+            for _dets, _lbl in (
+                (col_dets,   "column"),
+                (wall_dets,  "wall"),
+                (sf_dets,    "structural_framing"),
+                (stair_dets, "stairs"),
+                (lift_dets,  "lift"),
+                (slab_dets,  "slab"),
+            ):
+                if _dets:
+                    _det_counts[_lbl] = len(_dets)
+                    emit(observer.element_detected(job_id, _lbl, len(_dets)))
 
-            # ── Stage 3: Hybrid Fusion ─────────────────────────────────────────
-            emit(observer.stage_started(job_id, 4, "Hybrid fusion (vector + ML)"))
-            progress(45, "Fusing vector & ML detections…")
+            if grid_info.get("source") in ("fallback", "uniform_fallback"):
+                emit(observer.warn(job_id, "fallback_grid", {
+                    "source": grid_info.get("source"),
+                    "confidence": grid_info.get("grid_confidence", 0.0),
+                }))
+            emit(observer.stage_completed(job_id, 3, {"agents_run": 7, "by_type": _det_counts}))
+
+            # ── Stage 4: Detection Merger + Parser ────────────────────────────
+            emit(observer.stage_started(job_id, 4, "Detection merger + parser"))
+            progress(45, "Fusing detections with vector geometry…")
             fused_data = await self.fusion.fuse(
                 vector_data,
-                ml_detections,
+                col_dets,
                 {
                     "width":  image_data["width"],
                     "height": image_data["height"],
                     "dpi":    image_data.get("dpi", safe_dpi),
                 },
             )
-            # Use refined pixel-space detections if fusion produced them;
-            # fall back to raw YOLO detections if fusion returned nothing useful.
-            refined_detections = fused_data.get("refined_px") or ml_detections
+            # Refined column detections from fusion; other agents appended as-is.
+            refined_detections = (
+                (fused_data.get("refined_px") or col_dets)
+                + wall_dets + sf_dets + stair_dets + lift_dets + slab_dets
+            )
             emit(observer.stage_completed(job_id, 4, {"refined_count": len(refined_detections)}))
 
-            # ── Stage 4: Grid Detection ────────────────────────────────────────
-            # We derive the real-world coordinate system from structural grid
-            # lines and their dimension annotations — never from scale text.
-            emit(observer.stage_started(job_id, 5, "Grid detection"))
-            progress(55, "Detecting structural grid lines…")
-            grid_info = self._detect_grid(vector_data, image_data)
-            if grid_info.get("source") in ("fallback", "uniform_fallback"):
-                emit(observer.warn(job_id, "fallback_grid", {
-                    "source": grid_info.get("source"),
-                    "confidence": grid_info.get("grid_confidence", 0.0),
-                }))
-
-            # ── Stage 4b: Align grid pixel reference to YOLO column centres ──────
-            # The structural grid datum (mm spacings) comes from vector-detected
-            # dashed centre lines + PDF dimension annotations.  The PIXEL positions
-            # of those lines can be 10–40 px off from the rendered column centres
-            # due to rasterisation differences, which causes a world-coordinate
-            # offset of hundreds of mm (e.g. 30 px / 280 px × 8400 mm ≈ 900 mm).
-            #
-            # Align grid pixel positions to YOLO column centres while
-            # keeping all mm spacings from the PDF vector layer intact.
+            # ── Stage 4b: Align grid pixel reference to column centres ─────────
+            # Grid mm spacings come from PDF vector annotations (authoritative).
+            # Pixel positions can be 10–40 px off from rendered column centres
+            # due to rasterisation; align them while preserving all mm spacings.
             column_raw = [d for d in refined_detections if d.get("type") == "column"]
             if len(column_raw) >= 2:
                 grid_info = self.grid_detector.align_pixels_to_columns(
                     grid_info, column_raw
                 )
                 logger.info(
-                    f"Grid pixel alignment complete — grid is PDF-authoritative "
-                    f"({len(grid_info.get('x_lines_px',[]))} V × "
-                    f"{len(grid_info.get('y_lines_px',[]))} H lines kept from PDF)."
+                    f"Grid pixel alignment complete — "
+                    f"{len(grid_info.get('x_lines_px',[]))} V × "
+                    f"{len(grid_info.get('y_lines_px',[]))} H lines (PDF-authoritative)."
                 )
             emit(observer.stage_completed(job_id, 5, {
                 "grid_source": grid_info.get("source"),
@@ -363,10 +384,12 @@ class PipelineOrchestrator:
                     "warnings": validation_warnings[:10],  # cap payload size
                 }))
             emit(observer.stage_completed(job_id, 8, {
-                "columns": len(recipe.get("columns", [])),
-                "walls": len(recipe.get("walls", [])),
-                "doors": len(recipe.get("doors", [])),
-                "windows": len(recipe.get("windows", [])),
+                "columns":            len(recipe.get("columns", [])),
+                "walls":              len(recipe.get("walls", [])),
+                "structural_framing": len(recipe.get("structural_framing", [])),
+                "stairs":             len(recipe.get("stairs", [])),
+                "lifts":              len(recipe.get("lifts", [])),
+                "slabs":              len(recipe.get("slabs", [])),
                 "pre_clash_warnings": len(validation_warnings),
             }))
 
@@ -486,7 +509,7 @@ class PipelineOrchestrator:
                     "method":                secure_context.get("method"),
                     "dpi":                   safe_dpi,
                     "element_count":         len(refined_detections),
-                    "yolo_detections":       len(ml_detections),
+                    "yolo_detections":       len(col_dets),
                     "grid_source":           grid_info["source"],
                     "grid_lines":            f"{len(grid_info['x_lines_px'])}V × {len(grid_info['y_lines_px'])}H",
                     "has_grid":              grid_info["has_grid"],
@@ -640,18 +663,27 @@ class PipelineOrchestrator:
 
     def _format_for_geometry(self, detections: list) -> dict:
         """
-        Convert flat YOLO detections (pixel-space bboxes) into the structured
-        dict that geometry_generator and semantic_analyzer expect.
+        Convert agent detection dicts (pixel-space) into the structured dict
+        that geometry_generator expects.  Positions stay in pixel coords here;
+        GeometryGenerator converts them to real-world mm via the grid.
 
-        Element positions stay in pixel coordinates here; the geometry
-        generator will convert them to real-world mm using the grid.
+        Structural elements: column, wall, structural_framing, stairs, lift, slab.
+        Rooms are retained as a fallback input for slab boundary generation
+        until SlabDetectionAgent produces direct slab detections.
         """
-        output = {"walls": [], "doors": [], "windows": [], "columns": [], "rooms": []}
+        output = {
+            "walls":               [],
+            "columns":             [],
+            "structural_framing":  [],
+            "stairs":              [],
+            "lifts":               [],
+            "slabs":               [],
+            "rooms":               [],  # fallback for slab boundary generation
+        }
 
         for det in detections:
-            el_type = det.get("type", "").lower().rstrip("s")  # normalise plural
+            el_type = det.get("type", "").lower().rstrip("s")
             bbox    = det.get("bbox", [0.0, 0.0, 0.0, 0.0])
-
             if len(bbox) < 4:
                 continue
 
@@ -665,11 +697,11 @@ class PipelineOrchestrator:
                 "id":         len(output.get(el_type + "s", [])),
                 "confidence": det.get("confidence", 0.0),
                 "center":     [cx, cy],
-                "bbox":       bbox,          # pixel coords, grid-snapped downstream
+                "bbox":       bbox,
             }
 
             if el_type == "wall":
-                # Infer wall axis from aspect ratio
+                # Axis inferred from bounding-box aspect ratio
                 if w >= h:
                     endpoints = [[x1, cy], [x2, cy]]
                     thickness = h
@@ -679,15 +711,21 @@ class PipelineOrchestrator:
                 base.update({"endpoints": endpoints, "thickness": thickness})
                 output["walls"].append(base)
 
-            elif el_type == "door":
-                output["doors"].append(base)
-
-            elif el_type == "window":
-                output["windows"].append(base)
-
             elif el_type == "column":
                 base["dimensions"] = {"width_px": w, "height_px": h}
                 output["columns"].append(base)
+
+            elif el_type == "structural_framing":
+                output["structural_framing"].append(base)
+
+            elif el_type == "stair":
+                output["stairs"].append(base)
+
+            elif el_type == "lift":
+                output["lifts"].append(base)
+
+            elif el_type == "slab":
+                output["slabs"].append(base)
 
             elif el_type == "room":
                 output["rooms"].append(base)
@@ -707,7 +745,7 @@ class PipelineOrchestrator:
         """
         import copy
         patched = copy.deepcopy(recipe)
-        allowed_types  = {"columns", "walls", "doors", "windows", "floors"}
+        allowed_types  = {"columns", "walls", "structural_framing", "stairs", "lifts", "slabs"}
         numeric_fields = {"width", "depth", "height", "thickness",
                           "elevation", "area_sqm", "sill_height"}
 

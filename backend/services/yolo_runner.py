@@ -64,24 +64,32 @@ def load_yolo(weights_path: str | Path | None = None):
 def run_yolo(
     yolo_model,
     image_data: dict,
+    element_type: str = "column",
     tile_size: int = 1280,
     overlap: int = 200,
     conf: float = 0.25,
     iou: float = 0.45,
     target_dpi: int = 300,
+    min_squareness: float = 0.75,
+    min_side: int = 10,
+    max_side: int = 80,
 ) -> list:
     """
     Tiling YOLO inference on a rendered PDF image.
 
     Parameters
     ----------
-    yolo_model  : loaded YOLO model (or None → returns [])
-    image_data  : dict with "image" (H×W×3 uint8), "width", "height", "dpi"
-    tile_size   : tile side in pixels
-    overlap     : overlap between tiles in pixels
-    conf        : confidence threshold
-    iou         : NMS IoU threshold
-    target_dpi  : training DPI for correct object scale
+    yolo_model      : loaded YOLO model (or None → returns [])
+    image_data      : dict with "image" (H×W×3 uint8), "width", "height", "dpi"
+    element_type    : element type label written into each detection dict
+    tile_size       : tile side in pixels
+    overlap         : overlap between tiles in pixels
+    conf            : confidence threshold
+    iou             : NMS IoU threshold
+    target_dpi      : training DPI — image is upsampled to this before inference
+    min_squareness  : min(w,h)/max(w,h) filter; set 0.0 to disable (e.g. for beams)
+    min_side        : minimum bbox side in pixels after scaling
+    max_side        : maximum bbox side in pixels after scaling
 
     Returns
     -------
@@ -159,23 +167,23 @@ def run_yolo(
         b_nms = b_t.numpy()[keep]
         c_nms = c_t.numpy()[keep]
 
-        # Squareness + size filter
-        MIN_SQ   = 0.75
-        MIN_SIDE = 10
-        MAX_SIDE = 80
-
         detections = []
         for box, conf_val in zip(b_nms, c_nms):
             x1, y1, x2, y2 = box
             w = x2 - x1;  h = y2 - y1
             sq = min(w, h) / max(w, h) if max(w, h) > 0 else 0
-            if sq >= MIN_SQ and MIN_SIDE <= w <= MAX_SIDE and MIN_SIDE <= h <= MAX_SIDE:
+            passes = (
+                (min_squareness == 0.0 or sq >= min_squareness)
+                and min_side <= w <= max_side
+                and min_side <= h <= max_side
+            )
+            if passes:
                 bx1 = float(x1 * coord_scale)
                 by1 = float(y1 * coord_scale)
                 bx2 = float(x2 * coord_scale)
                 by2 = float(y2 * coord_scale)
                 detections.append({
-                    "type":       "column",
+                    "type":       element_type,
                     "bbox":       [bx1, by1, bx2, by2],
                     "center":     [(bx1 + bx2) / 2, (by1 + by2) / 2],
                     "confidence": float(conf_val),
@@ -183,7 +191,7 @@ def run_yolo(
 
         logger.info(
             f"YOLO tiling: {len(raw_boxes)} raw → {len(keep)} after NMS "
-            f"→ {len(detections)} columns after filter"
+            f"→ {len(detections)} {element_type}(s) after filter"
         )
         return detections
 

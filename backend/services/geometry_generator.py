@@ -206,33 +206,36 @@ class GeometryGenerator:
         logger.info("Generating Semantic 3D parameters for Revit (grid-based)…")
 
         geometry = {
-            # ── Levels: always provide Ground Floor + First Floor ──────
-            "levels": self._build_default_levels(enriched_data),
+            "levels":   self._build_default_levels(enriched_data),
+            "grids":    self._build_grid_commands(grid_info),
 
-            # ── Structural grid lines ──────────────────────────────────
-            "grids": self._build_grid_commands(grid_info),
-
-            # ── Building elements ──────────────────────────────────────
-            "walls":    self._build_wall_parameters(
-                            enriched_data.get("walls", []), grid_info),
-            "doors":    self._build_opening_parameters(
-                            enriched_data.get("doors", []), grid_info, "door"),
-            "windows":  self._build_opening_parameters(
-                            enriched_data.get("windows", []), grid_info, "window"),
-            "rooms":    self._build_room_parameters(
-                            enriched_data.get("rooms", []), grid_info),
-            "columns":  self._build_column_parameters(
-                            enriched_data.get("columns", []), grid_info),
+            # ── Structural elements ────────────────────────────────────
+            "columns":            self._build_column_parameters(
+                                      enriched_data.get("columns", []), grid_info),
+            "walls":              self._build_wall_parameters(
+                                      enriched_data.get("walls", []), grid_info),
+            "structural_framing": self._build_structural_framing_parameters(
+                                      enriched_data.get("structural_framing", [])),
+            "stairs":             self._build_stairs_parameters(
+                                      enriched_data.get("stairs", [])),
+            "lifts":              self._build_lift_parameters(
+                                      enriched_data.get("lifts", [])),
             **self._build_slabs(enriched_data.get("rooms", []), grid_info),
+
+            # Doors and windows removed from structural pipeline.
+            # Kept as empty arrays so the Revit Add-in JSON schema stays valid.
+            "doors":   [],
+            "windows": [],
 
             "metadata": enriched_data.get("metadata", {}),
         }
 
         logger.info(
-            f"Generated: {len(geometry['walls'])} walls, "
-            f"{len(geometry['doors'])} doors, "
-            f"{len(geometry['windows'])} windows, "
-            f"{len(geometry['columns'])} columns, "
+            f"Generated: {len(geometry['columns'])} columns, "
+            f"{len(geometry['walls'])} walls, "
+            f"{len(geometry['structural_framing'])} framing, "
+            f"{len(geometry['stairs'])} stairs, "
+            f"{len(geometry['lifts'])} lifts, "
             f"{len(geometry['grids'])} grid lines, "
             f"levels: {[l['name'] for l in geometry['levels']]}"
         )
@@ -571,6 +574,19 @@ class GeometryGenerator:
             })
 
         return column_params
+
+    # ------------------------------------------------------------------
+    # Structural element stubs — populated once detection agents are trained
+    # ------------------------------------------------------------------
+
+    def _build_structural_framing_parameters(self, elements: List[Dict]) -> List[Dict]:
+        return []
+
+    def _build_stairs_parameters(self, elements: List[Dict]) -> List[Dict]:
+        return []
+
+    def _build_lift_parameters(self, elements: List[Dict]) -> List[Dict]:
+        return []
 
     def _build_room_parameters(
         self, rooms_2d: List[Dict], grid_info: Dict
