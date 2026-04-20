@@ -1633,7 +1633,6 @@ namespace RevitModelBuilderAddin
                         {
                             FailureResolutionType.SkipElements,
                             FailureResolutionType.DetachElements,
-                            FailureResolutionType.AcceptElements,
                         })
                         {
                             if (!msg.HasResolutionOfType(resType)) continue;
