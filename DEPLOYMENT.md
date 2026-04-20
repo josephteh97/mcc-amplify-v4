@@ -305,6 +305,14 @@ curl http://LT-HQ-277:5000/health
 # Expected: Revit Model Builder ready
 ```
 
+#### 2.6 DLL update if C# code is Updated
+```powershell
+cd C:\MyDocuments\mcc-amplify-v4\revit_server\RevitAddin
+dotnet build -c Release
+Copy-Item bin\Release\net48\RevitModelBuilderAddin.dll, RevitModelBuilder.addin `
+    -Destination "$env:ProgramData\Autodesk\Revit\Addins\2023\" -Force
+```
+
 ---
 
 ## Part 3: Start the Full System
