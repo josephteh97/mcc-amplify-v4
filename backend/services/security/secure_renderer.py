@@ -189,6 +189,9 @@ class ResourceMonitor:
     def stop(self):
         self.monitoring = False
 
+    # Warn at 75% of physical RAM (minimum 4 GB so small-machine installs still get warned)
+    _WARN_THRESHOLD_MB: int = max(4096, int(psutil.virtual_memory().total / 1024 / 1024 * 0.75))
+
     async def _monitor_loop(self):
         while self.monitoring:
             try:
@@ -196,8 +199,12 @@ class ResourceMonitor:
                 memory_mb = process.memory_info().rss / (1024 * 1024)
                 self.peak_memory_mb = max(self.peak_memory_mb, memory_mb)
 
-                if memory_mb > 4096:
-                    logger.error(f"🔴 MEMORY EXCEEDED: {memory_mb:.0f}MB")
+                if memory_mb > self._WARN_THRESHOLD_MB:
+                    logger.error(
+                        f"🔴 MEMORY EXCEEDED: {memory_mb:.0f}MB "
+                        f"(threshold {self._WARN_THRESHOLD_MB}MB / "
+                        f"{psutil.virtual_memory().total // 1024 // 1024}MB total)"
+                    )
 
                 await asyncio.sleep(5)
             except Exception as e:

@@ -23,6 +23,7 @@ Scale text printed on the drawing (e.g. "1:100") is intentionally ignored.
 """
 
 import asyncio
+import gc
 import json
 import math
 import os
@@ -217,6 +218,12 @@ class PipelineOrchestrator:
                     "confidence": grid_info.get("grid_confidence", 0.0),
                 }))
             emit(observer.stage_completed(job_id, 3, {"agents_run": 7, "by_type": _det_counts}))
+
+            # Release CLAHE/PIL copies created by YOLO agents — the raw numpy
+            # image is still needed downstream (resolve_types), but the
+            # intermediate copies inside run_yolo have already been returned
+            # as tensors and can be GC'd now.
+            gc.collect()
 
             # ── Stage 4: Detection Merger + Parser ────────────────────────────
             emit(observer.stage_started(job_id, 4, "Detection merger + parser"))

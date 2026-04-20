@@ -5,8 +5,10 @@ Architecture:
   Message Router     → classify intent (status / technical / troubleshoot / admin)
   Context Manager    → per-user conversation history + job snapshot (memory store)
   Pipeline Observer  → subscribe to pipeline events → proactive notifications
-  LLM               → NVIDIA NIM (DeepSeek V3.1, free) or Google Gemini API
-                       Controlled by CHAT_MODEL_BACKEND env var (default: nvidia_nim)
+  LLM               → Local Ollama models (no API key required)
+                         qwen3_vl  → qwen3-vl:2b       (default)
+                         gemma3_it → gemma3:4b-it-qat   (alternative)
+                       Controlled by CHAT_MODEL_BACKEND env var (default: qwen3_vl)
 """
 
 from __future__ import annotations
@@ -32,96 +34,73 @@ from .pipeline_observer import PipelineObserver, observer as global_observer
 
 # ── Backend selection ─────────────────────────────────────────────────────────
 
-_BACKEND = os.getenv("CHAT_MODEL_BACKEND", "nvidia_nim").lower().strip()
+_OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+
+# Model registry: backend key → Ollama model tag
+_OLLAMA_MODELS = {
+    "qwen3_vl":  "qwen3-vl:2b",
+    "gemma3_it": "gemma3:4b-it-qat",
+}
+
+_BACKEND = os.getenv("CHAT_MODEL_BACKEND", "qwen3_vl").lower().strip()
 
 
-# ── NVIDIA NIM client (OpenAI-compatible, free tier) ─────────────────────────
+# ── Ollama initialisation ─────────────────────────────────────────────────────
 
-_nvidia_client = None
-_NVIDIA_MODEL  = "deepseek-ai/deepseek-v3.1"
-_NVIDIA_BASE   = "https://integrate.api.nvidia.com/v1"
+_chat_session  = None   # requests.Session shared across all calls
+_available_models: dict[str, str] = {}  # backend_key → model_tag (installed only)
 
-def _init_nvidia_client():
-    from utils.api_keys import get_nvidia_api_key
-    api_key = get_nvidia_api_key()
-    if not api_key:
-        raise ValueError(
-            "NVIDIA API key not found — add it to backend/nvidia_key.txt "
-            "or set NVIDIA_API_KEY in backend/.env  (sign up free at https://build.nvidia.com)"
+
+def _init_ollama_chat():
+    import requests
+
+    try:
+        r = requests.get(f"{_OLLAMA_URL}/api/tags", timeout=5)
+        r.raise_for_status()
+        installed = {m["name"] for m in r.json().get("models", [])}
+    except Exception as exc:
+        raise ConnectionError(f"Ollama server not reachable: {exc}")
+
+    available = {k: v for k, v in _OLLAMA_MODELS.items() if v in installed}
+    if not available:
+        raise ConnectionError(
+            f"No chat models found in Ollama. "
+            f"Run: ollama pull qwen3-vl:2b && ollama pull gemma3:4b-it-qat"
         )
-    try:
-        from openai import OpenAI
-    except ImportError:
-        raise ImportError("openai package not installed. Run: pip install openai")
-    client = OpenAI(api_key=api_key, base_url=_NVIDIA_BASE)
-    logger.info(f"✓ Chat agent using NVIDIA NIM ({_NVIDIA_MODEL})")
-    return client
+    return requests.Session(), available
 
-
-# ── Gemini client ─────────────────────────────────────────────────────────────
-
-_gemini_client = None
-_GEMINI_MODEL  = "gemini-2.5-flash"
-
-def _init_gemini_client():
-    try:
-        from google import genai
-        from utils.api_keys import get_google_api_key
-    except ImportError as e:
-        raise ImportError(f"google-genai package not installed: {e}")
-    api_key = get_google_api_key()
-    if not api_key or api_key == "[placeholder]":
-        raise ValueError("GOOGLE_API_KEY not set — add it to backend/.env")
-    client = genai.Client(api_key=api_key)
-    logger.info(f"✓ Chat agent using Gemini API ({_GEMINI_MODEL})")
-    return client
-
-
-# ── Initialise ALL available backends so the user can switch freely ───────────
 
 try:
-    _nvidia_client = _init_nvidia_client()
-except Exception as e:
-    logger.warning(f"NVIDIA NIM unavailable ({e})")
+    _chat_session, _available_models = _init_ollama_chat()
+    logger.info(
+        "✓ Chat agent using Ollama models: {}",
+        list(_available_models.values()),
+    )
+except Exception as exc:
+    logger.warning(f"Ollama chat unavailable ({exc}) — chat responses will be disabled")
 
-try:
-    _gemini_client = _init_gemini_client()
-except Exception as e:
-    logger.warning(f"Gemini unavailable ({e})")
-
-# Adjust the default if the configured backend failed but the other is up
-if _BACKEND == "nvidia_nim" and _nvidia_client is None:
-    if _gemini_client is not None:
-        logger.warning("NVIDIA NIM not ready — default falling back to Gemini")
-        _BACKEND = "gemini_api"
-    else:
-        logger.error("No AI backends available — chat agent will return errors")
-elif _BACKEND == "gemini_api" and _gemini_client is None:
-    if _nvidia_client is not None:
-        logger.warning("Gemini not ready — default falling back to NVIDIA NIM")
-        _BACKEND = "nvidia_nim"
-    else:
-        logger.error("No AI backends available — chat agent will return errors")
+if _BACKEND not in _available_models and _available_models:
+    _BACKEND = next(iter(_available_models))
+    logger.warning(f"Requested chat model not available — defaulting to {_BACKEND}")
 
 
 # ── Public helpers ─────────────────────────────────────────────────────────────
 
 _MODEL_META = {
-    "nvidia_nim": {"display_name": "DeepSeek V3.1", "provider": "NVIDIA NIM"},
-    "gemini_api": {"display_name": "Gemini 2.5 Flash", "provider": "Google"},
+    "qwen3_vl":  {"display_name": "Qwen3-VL 2B",      "provider": "Ollama"},
+    "gemma3_it": {"display_name": "Gemma3 4B IT QAT",  "provider": "Ollama"},
 }
 
 
 def get_available_models() -> dict:
-    """Return the list of configured AI backends and which default is active."""
+    """Return available Ollama chat backends and the active default."""
     models = []
     for backend, meta in _MODEL_META.items():
-        client = _nvidia_client if backend == "nvidia_nim" else _gemini_client
         models.append({
             "backend":      backend,
             "display_name": meta["display_name"],
             "provider":     meta["provider"],
-            "available":    client is not None,
+            "available":    backend in _available_models,
         })
     return {"models": models, "default": _BACKEND}
 
@@ -143,12 +122,13 @@ Your role:
 
 Pipeline stages:
   Stage 1 — Security & size check
-  Stage 2 — Dual-track PDF processing (Track A: vector geometry, Track B: raster rendering + YOLO)
-  Stage 3 — Hybrid fusion (aligning ML detections with precise vector geometry)
-  Stage 4 — Structural grid detection (derives real-world scale from grid lines and dimension annotations; scale text like "1:100" is intentionally ignored as unreliable)
-  Stage 5 — Semantic AI analysis (Claude/Gemini/local model validates and enriches detected elements)
-  Stage 6 — 3D geometry generation (grid-snapped mm coordinates → parametric 3D solids)
-  Stage 7 — BIM export (Revit server → .RVT; trimesh → .GLB)
+  Stage 2 — Source data acquisition (vector paths + raster render, parallel)
+  Stage 3 — Parallel element detection agents (Grid, Column, Structural Framing, Stairs, Lift, Wall, Slab)
+  Stage 4 — Detection merger + parser (fusion + grid pixel alignment)
+  Stage 4c — Intelligence middleware (type resolution, cross-element validation, DfMA rules)
+  Stage 5 — BIM Translator enrichment + deduplication
+  Stage 6 — 3D geometry generation (px → mm → Revit recipe)
+  Stage 7 — BIM export (Revit Add-in → .RVT; GltfExporter → .GLB)
 
 Output formats:
   • glTF (.glb) — lightweight 3D web format for browser visualisation
@@ -203,25 +183,15 @@ class ChatAgent:
         self.context.add_message(user_id, "user", message)
 
         # Per-call backend override from the frontend model selector.
-        # Falls back to the server-side default if the requested backend
-        # has no client initialised (key missing / quota exceeded).
         requested = context_data.get("model", "").lower().strip()
-        if requested == "nvidia_nim" and _nvidia_client is not None:
-            call_backend = "nvidia_nim"
-        elif requested == "gemini_api" and _gemini_client is not None:
-            call_backend = "gemini_api"
-        else:
-            call_backend = _BACKEND   # server default
+        call_backend = requested if requested in _available_models else _BACKEND
 
         intent   = route(message)
         enriched = self._build_user_content(message, user_id, intent)
         history  = self.context.get_history(user_id)
 
         try:
-            if call_backend == "nvidia_nim":
-                reply = await self._call_nvidia(enriched, history)
-            else:
-                reply = await self._call_gemini(enriched, history)
+            reply = await self._call_ollama_chat(enriched, history, call_backend)
         except Exception as exc:
             logger.error(f"Chat LLM error ({call_backend}): {exc}")
             reply = "Sorry, I had trouble reaching the AI service. Please try again."
@@ -229,50 +199,40 @@ class ChatAgent:
         self.context.add_message(user_id, "assistant", reply)
         return reply
 
-    # ── LLM backends ──────────────────────────────────────────────────────────
+    # ── LLM backend ───────────────────────────────────────────────────────────
 
-    async def _call_nvidia(self, enriched: str, history: list) -> str:
-        """Call NVIDIA NIM (OpenAI-compatible) with chat history."""
-        messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
-        for turn in history[:-1]:   # exclude current user turn (already in enriched)
-            role = "user" if turn["role"] == "user" else "assistant"
-            messages.append({"role": role, "content": turn["content"]})
-        messages.append({"role": "user", "content": enriched})
+    async def _call_ollama_chat(
+        self, enriched: str, history: list, backend_key: str
+    ) -> str:
+        """Call local Ollama /api/chat with full conversation history."""
+        if _chat_session is None:
+            raise RuntimeError("Ollama session not initialised")
 
+        model = _available_models.get(backend_key)
+        if model is None:
+            raise ValueError(f"Unknown chat backend: {backend_key!r}")
+
+        # history[:-1]: exclude the current user turn — it's already merged into enriched
+        messages = (
+            [{"role": "system", "content": _SYSTEM_PROMPT}]
+            + [{"role": t["role"], "content": t["content"]} for t in history[:-1]]
+            + [{"role": "user", "content": enriched}]
+        )
+
+        payload = {
+            "model":   model,
+            "messages": messages,
+            "stream":  False,
+            "options": {"num_predict": 800, "temperature": 0.7},
+        }
         response = await asyncio.get_running_loop().run_in_executor(
             None,
-            lambda: _nvidia_client.chat.completions.create(
-                model=_NVIDIA_MODEL,
-                messages=messages,
-                max_tokens=800,
-                temperature=0.7,
+            lambda: _chat_session.post(
+                f"{_OLLAMA_URL}/api/chat", json=payload, timeout=120
             ),
         )
-        return response.choices[0].message.content.strip()
-
-    async def _call_gemini(self, enriched: str, history: list) -> str:
-        """Call Google Gemini API."""
-        from google.genai import types as genai_types
-
-        contents = []
-        for turn in history[:-1]:
-            role = "user" if turn["role"] == "user" else "model"
-            contents.append({"role": role, "parts": [{"text": turn["content"]}]})
-        contents.append({"role": "user", "parts": [{"text": enriched}]})
-
-        response = await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: _gemini_client.models.generate_content(
-                model=_GEMINI_MODEL,
-                contents=contents,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=_SYSTEM_PROMPT,
-                    max_output_tokens=800,
-                    temperature=0.7,
-                ),
-            ),
-        )
-        return response.text.strip()
+        response.raise_for_status()
+        return response.json()["message"]["content"].strip()
 
     # ── Context builder ────────────────────────────────────────────────────────
 

@@ -246,9 +246,10 @@ class SemanticAnalyzer:
 
         # Vision model preference order — best for floor plan analysis first
         VISION_CANDIDATES = [
-            "gemma3:4b",
-            "qwen3-vl:latest", "qwen3-vl:8b", "qwen3-vl:4b", "qwen3-vl:2b",
-            "qwen2.5vl:7b", "qwen2.5vl:3b",
+            "aisingapore/Gemma-SEA-LION-v4-4B-VL:latest",  # primary: Singapore VL model
+            "gemma3:4b-it-qat",
+            "qwen3-vl:2b", "qwen3-vl:4b", "qwen3-vl:8b", "qwen3-vl:latest",
+            "qwen2.5vl:3b", "qwen2.5vl:7b",
             "llava:13b", "llava:7b",
             "llava-llama3:8b", "llava-phi3:3.8b",
             "llama3.2-vision:11b",
