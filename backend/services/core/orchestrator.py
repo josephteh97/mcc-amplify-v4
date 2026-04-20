@@ -57,6 +57,8 @@ from backend.services.intelligence.type_resolver import resolve_types
 from backend.services.intelligence.cross_element_validator import validate_elements, OFF_GRID
 from backend.services.intelligence.validation_agent import enforce_rules
 from backend.services.intelligence.bim_translator_enricher import enrich_recipe
+from backend.services.intelligence.recipe_sanitizer import sanitize_recipe
+from backend.services.revit_warning_handler import handle_warnings as handle_revit_warnings
 
 # ── Observer (fire-and-forget event bus for chat agent) ──────────────────────
 from backend.chat_agent.pipeline_observer import observer
@@ -406,6 +408,16 @@ class PipelineOrchestrator:
                 "pre_clash_warnings": len(validation_warnings),
             }))
 
+            # ── Pre-export sanitizer ───────────────────────────────────────────
+            # Fix known geometry problems (beam-column overlaps, short beams,
+            # undersized columns) before the recipe reaches the Windows machine.
+            recipe, sanitizer_actions = sanitize_recipe(recipe)
+            if sanitizer_actions:
+                emit(observer.warn(job_id, "pre_export_sanitizer", {
+                    "count":   len(sanitizer_actions),
+                    "actions": sanitizer_actions,
+                }))
+
             # ── Stage 7: BIM Export ────────────────────────────────────────────
             emit(observer.stage_started(job_id, 9, "BIM export (RVT + glTF)"))
             progress(88, "Exporting RVT & glTF…")
@@ -457,25 +469,49 @@ class PipelineOrchestrator:
                                 rvt_status = "success"
                             break
 
-                        # Ask the AI what to change
                         progress(
                             90 + _attempt * 3,
-                            f"Revit warnings — AI correcting (round {_attempt + 1}/3)…",
+                            f"Revit warnings — correcting (round {_attempt + 1}/3)…",
                         )
-                        corrections = await self.semantic_ai.analyze_revit_warnings(
+
+                        # ── Step 1: deterministic pattern-based handler ────────
+                        current_recipe, det_actions, unresolved = handle_revit_warnings(
                             revit_warnings, current_recipe
+                        )
+                        if det_actions:
+                            logger.info(
+                                f"Deterministic corrections: {len(det_actions)} fix(es) — "
+                                + ", ".join(det_actions[:3])
+                                + (" …" if len(det_actions) > 3 else "")
+                            )
+                            emit(observer.warn(job_id, "revit_deterministic_corrections", {
+                                "attempt": _attempt + 1,
+                                "actions": det_actions,
+                            }))
+                            with open(transaction_path, "w") as f:
+                                json.dump(current_recipe, f)
+
+                            if not unresolved:
+                                # All warnings handled — retry Revit without AI call
+                                continue
+
+                        # ── Step 2: AI for remaining unresolved warnings ───────
+                        warnings_for_ai = unresolved if det_actions else revit_warnings
+                        corrections = await self.semantic_ai.analyze_revit_warnings(
+                            warnings_for_ai, current_recipe
                         )
                         if not corrections.get("corrections"):
                             logger.info(
                                 "AI found no actionable corrections for Revit warnings "
-                                f"— proceeding with current RVT: {revit_warnings}"
+                                f"— proceeding with current RVT: {warnings_for_ai}"
                             )
                             rvt_warnings_final = revit_warnings
                             rvt_status = "warnings_accepted"
                             emit(observer.warn(job_id, "revit_warnings", {
-                                "attempts": _attempt + 1,
-                                "warnings": revit_warnings,
-                                "ai_corrections": "none_actionable",
+                                "attempts":        _attempt + 1,
+                                "warnings":        revit_warnings,
+                                "ai_corrections":  "none_actionable",
+                                "det_actions":     det_actions,
                             }))
                             break
 
@@ -486,7 +522,7 @@ class PipelineOrchestrator:
                         current_recipe = self._apply_revit_corrections(
                             current_recipe, corrections
                         )
-                        # Persist the corrected transaction for the next send
+                        # Persist the combined (deterministic + AI) corrections
                         with open(transaction_path, "w") as f:
                             json.dump(current_recipe, f)
 
