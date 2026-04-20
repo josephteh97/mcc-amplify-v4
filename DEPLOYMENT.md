@@ -27,15 +27,15 @@ flowchart LR
         direction TB
         FE["React + Three.js\nFrontend :5173"]
         API["FastAPI Backend :8000"]
-        PIPE["Pipeline Orchestrator"]
-        INT["Intelligence Middleware\nType Resolver / Validator / DfMA"]
-        SEM["Semantic AI\nOllama / Gemini / Claude"]
+        AGENTS["7 Parallel Detection Agents\nGrid · Column · Framing · Stairs · Lift · Wall · Slab"]
+        INT["Intelligence Middleware\nType Resolver → Validator → DfMA + Join-Conflict"]
+        SEM["Semantic AI (Ollama)\naisingapore/Gemma-SEA-LION-v4-4B-VL"]
         GEO["Geometry Generator"]
         BTE["BIM Translator Enricher"]
         EXP["RVT Exporter + glTF Exporter"]
 
-        FE --> API --> PIPE
-        PIPE --> INT --> SEM --> GEO --> BTE --> EXP
+        FE --> API --> AGENTS
+        AGENTS --> INT --> SEM --> GEO --> BTE --> EXP
     end
 
     subgraph WIN["Windows"]
@@ -54,15 +54,28 @@ Both machines must be on the same local network (or VPN). The Ubuntu machine is 
 
 ```mermaid
 flowchart TD
-    PDF(["PDF Upload"]) --> SEC["Stage 1: Security Check\nSecurePDFRenderer"]
-    SEC --> VEC["Stage 2a: Vector Extraction\nVectorProcessor (PyMuPDF)"] & RAS["Stage 2b: Raster + YOLO\ncolumn-detect.pt\n1280px tiling, NMS"]
-    VEC & RAS --> FUS["Stage 3: Hybrid Fusion\nSnap YOLO to vector lines"]
-    FUS --> GRD["Stage 4: Grid Detection\nStructural grid → mm scale"]
-    GRD --> INT["Stage 4c: Intelligence Middleware\nType Resolver → Validator → DfMA"]
-    INT --> SEM["Stage 5: Semantic AI\nOllama / Gemini / Claude"]
-    SEM --> GEO["Stage 6: Geometry Generation\npx → world mm → Revit recipe"]
-    GEO --> BTE["Stage 6.5: BIM Enrichment\nAppend intelligence metadata"]
-    BTE --> RVT["Stage 7a: RVT Export\n→ Windows Revit"] & GLT["Stage 7b: glTF Export\n.glb with Z→Y-up"]
+    PDF(["PDF Upload"]) --> SEC["Stage 1: Security Check\nSecurePDFRenderer — 150 MP pixel budget"]
+
+    SEC --> SRC["Stage 2: Source Data\nVectorProcessor + StreamingProcessor\n(parallel I/O)"]
+
+    SRC --> AGENTS
+
+    subgraph AGENTS["Stage 3 — Parallel Detection  asyncio.gather"]
+        direction LR
+        G["Grid Agent"]
+        C["Column Agent\ncolumn-detect.pt"]
+        F["Framing Agent\nstructural-framing.pt"]
+        W["Wall Agent (stub)"]
+        ST["Stairs (stub)"]
+        LI["Lift (stub)"]
+        SL["Slab (stub)"]
+    end
+
+    AGENTS --> MERGE["Stage 4: Detection Merger\nFusion + grid pixel alignment"]
+    MERGE --> INT["Stage 4c: Intelligence Middleware\nType Resolver → CrossElementValidator → ValidationAgent\nDfMA SS CP 65 · beam-column join-conflict detection"]
+    INT --> GEO["Stage 5: Geometry Generation\npx → world mm → Revit recipe\nJoin-conflict framing excluded"]
+    GEO --> BTE["Stage 5.5: BIM Enrichment + Dedup\nAppend intelligence metadata"]
+    BTE --> RVT["Stage 6a: RVT Export\n→ Windows Revit\nJoin errors auto-resolved"] & GLT["Stage 6b: glTF Export\n.glb Z→Y-up\ncolumns · framing · walls · slabs"]
     RVT & GLT --> DONE(["BIM model + 3D preview"])
 ```
 
@@ -84,12 +97,15 @@ flowchart TD
 - [ ] .NET Framework 4.8 runtime installed
 - [ ] Administrator rights
 
-### API Keys (required)
-- [ ] **Chat agent** — NVIDIA NIM key (free, 1000 credits on signup): <https://build.nvidia.com>
-  - Or Google Gemini key as fallback: <https://aistudio.google.com/>
-- [ ] **Semantic analysis** — Google Gemini key **or** Anthropic key (at least one)
-  - Gemini: <https://aistudio.google.com/>
-  - Anthropic: <https://console.anthropic.com/>
+### Ollama Models (required — no API keys needed)
+
+Install Ollama on Ubuntu: <https://ollama.com/download>
+
+```bash
+ollama pull qwen3-vl:2b                                  # chat agent (default)
+ollama pull gemma3:4b-it-qat                             # chat agent (alt)
+ollama pull aisingapore/Gemma-SEA-LION-v4-4B-VL:latest  # semantic analysis
+```
 
 ---
 
@@ -171,18 +187,16 @@ nano .env
 **Required settings:**
 
 ```bash
-# -- Chat Agent ----------------------------------------------------------------
-# NVIDIA NIM is the default (free tier — 1000 credits on signup)
-# Get key at: https://build.nvidia.com  → "Get API Key"
-# Preferred: store key in backend/nvidia_key.txt (gitignored)
-CHAT_MODEL_BACKEND=nvidia_nim           # or: gemini_api
+# -- Chat Agent (local Ollama — no API key) ------------------------------------
+#   qwen3_vl  → qwen3-vl:2b        (default)
+#   gemma3_it → gemma3:4b-it-qat   (alternative)
+CHAT_MODEL_BACKEND=qwen3_vl
 
-# -- Semantic AI Backend (pipeline Stage 5) ------------------------------------
-# Choose one: gemini_api | anthropic_api | ollama
-SEMANTIC_MODEL_BACKEND=gemini_api
-# Preferred: store key in backend/google_key.txt (gitignored)
-# GOOGLE_API_KEY=your_gemini_key_here
-# ANTHROPIC_API_KEY=your_anthropic_key_here
+# -- Semantic AI Backend (local Ollama) ----------------------------------------
+SEMANTIC_BACKEND_PRIORITY=ollama
+SEMANTIC_MODEL_BACKEND=ollama
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=aisingapore/Gemma-SEA-LION-v4-4B-VL:latest
 
 # -- Intelligence Middleware (Stage 4c) ----------------------------------------
 COLUMN_CONF_THRESHOLD=0.25      # YOLO confidence for column detection
@@ -190,6 +204,9 @@ MAX_GRID_DIST_PX=80             # Max px distance from grid → "off_grid" flag
 ISOLATION_RADIUS_PX=200         # Neighbourhood consensus radius
 MIN_BAY_MM=3000                 # DfMA minimum bay spacing (SS CP 65)
 MAX_BAY_MM=12000                # DfMA maximum bay spacing (SS CP 65)
+
+# -- Beam geometry defaults ----------------------------------------------------
+DEFAULT_BEAM_DEPTH_MM=800       # Beam cross-section depth (matches column default)
 
 # -- Windows Revit Server ------------------------------------------------------
 # The C# Add-in listens on TCP port 5000 (TcpListener — works cross-machine)
@@ -204,15 +221,6 @@ DEBUG=false
 # -- Upload Limits -------------------------------------------------------------
 MAX_UPLOAD_SIZE=52428800    # 50 MB
 ALLOWED_EXTENSIONS=pdf
-```
-
-#### Storing API keys securely
-
-Rather than putting keys in `.env` (which may be accidentally committed), store them in per-service text files in `backend/`. All are covered by `.gitignore`:
-
-```bash
-echo "nvapi-xxxxxxxxxxxx" > backend/nvidia_key.txt   # NVIDIA NIM (chat agent)
-echo "AIzaSy..."         > backend/google_key.txt    # Google Gemini
 ```
 
 ### 1.7 Create Data Directories
@@ -230,10 +238,11 @@ chmod -R 755 data/ logs/
 Place the trained YOLO weights at:
 
 ```
-backend/ml/weights/column-detect.pt
+backend/ml/weights/column-detect.pt          ← structural column detection
+backend/ml/weights/structural-framing.pt     ← beam / structural framing detection
 ```
 
-The pipeline can still run without YOLO (vector-only fallback), but detection quality will be reduced.
+Both files must be present for full detection. The pipeline continues if either is missing (vector-only or column-only fallback), but detection quality will be reduced.
 
 ### 1.9 Register Windows Hostname (first-time only)
 

@@ -356,6 +356,23 @@ namespace RevitModelBuilderAddin
 
             lock (_warningsLock) { _sessionWarnings.Clear(); }
 
+            // If a previous event is still queued (e.g. left by a timed-out request or
+            // a Revit dialog that blocked execution), wait up to 20 s for it to clear
+            // before raising a new one.  Without this, rapid Python retries all pile up
+            // against the already-pending event and all fail immediately.
+            const int pendingPollMs = 300;
+            const int pendingMaxMs  = 20_000;
+            int pendingWaited = 0;
+            while (_buildEvent.IsPending && pendingWaited < pendingMaxMs)
+            {
+                Thread.Sleep(pendingPollMs);
+                pendingWaited += pendingPollMs;
+            }
+            if (_buildEvent.IsPending)
+                throw new Exception(
+                    "ExternalEvent still Pending after 20 s — Revit is likely showing a modal dialog. " +
+                    "Dismiss any open dialogs in Revit and retry.");
+
             _buildHandler.Prepare(buildReq.TransactionJson, outputPath);
             ExternalEventRequest raised = _buildEvent.Raise();
 
@@ -1597,9 +1614,48 @@ namespace RevitModelBuilderAddin
                 }
                 else
                 {
-                    Errors.Add(text);
-                    ErrorDetails.Add((text, elemIds));
-                    WriteLog($"[ERROR] severity={msg.GetSeverity()} {text}{elemStr}");
+                    // Attempt to resolve known non-fatal structural errors rather than
+                    // letting them block the transaction.
+                    //
+                    // "Cannot keep elements joined" — Revit tries to auto-join adjacent
+                    // structural members (column↔beam) and fails when geometry is complex.
+                    // Resolution: accept the unjoin (elements remain; join is removed).
+                    // This is equivalent to clicking "Unjoin" in Revit's error dialog.
+                    string desc = text.ToLower();
+                    bool isJoinError = desc.Contains("cannot keep") ||
+                                       (desc.Contains("element") && desc.Contains("join"));
+
+                    bool resolved = false;
+                    if (isJoinError)
+                    {
+                        // Try resolution types in preference order for join errors
+                        foreach (var resType in new FailureResolutionType[]
+                        {
+                            FailureResolutionType.SkipElements,
+                            FailureResolutionType.DetachElements,
+                            FailureResolutionType.AcceptElements,
+                        })
+                        {
+                            if (!msg.HasResolutionOfType(resType)) continue;
+                            try
+                            {
+                                msg.SetCurrentResolutionType(resType);
+                                fa.ResolveFailure(msg);
+                                Warnings.Add($"[JOIN-RESOLVED:{resType}] {text}");
+                                WriteLog($"[JOIN-RESOLVED:{resType}] {text}{elemStr}");
+                                resolved = true;
+                                break;
+                            }
+                            catch (Exception ex) { WriteLog($"[DEBUG] Resolution {resType} skipped: {ex.Message}"); }
+                        }
+                    }
+
+                    if (!resolved)
+                    {
+                        Errors.Add(text);
+                        ErrorDetails.Add((text, elemIds));
+                        WriteLog($"[ERROR] severity={msg.GetSeverity()} {text}{elemStr}");
+                    }
                 }
             }
             return FailureProcessingResult.Continue;

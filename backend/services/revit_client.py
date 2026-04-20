@@ -115,7 +115,7 @@ class RevitClient:
     # ── HTTP mode ─────────────────────────────────────────────────────────────
 
     _MAX_RETRIES = 3          # attempts before giving up
-    _RETRY_BASE_S = 3         # base back-off: 3 s, 6 s, …
+    _RETRY_BASE_S = 25        # base back-off: 25 s, 50 s — matches C# 20 s pending-wait
 
     async def _build_via_http(
         self, transaction_path: str, job_id: str, pdf_filename: str = ""

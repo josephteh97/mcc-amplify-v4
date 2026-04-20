@@ -143,16 +143,18 @@ async def chat_websocket(websocket: WebSocket, user_id: str):
                     message=data.get("message", ""),
                     context_data=data.get("context", {}),
                 )
-                await websocket.send_json({
-                    "type": "agent_message",
-                    "message": reply,
-                    "metadata": {"auto_generated": False},
-                })
+                # send_reply routes through the current active session so a
+                # mid-generation reconnect still receives the reply.
+                await chat_agent.send_reply(user_id, reply)
 
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, ConnectionResetError):
+        # Normal disconnect: clean WS close frame or TCP reset (browser closed tab)
         chat_agent.on_disconnect(user_id)
     except Exception as exc:
-        logger.error(f"Chat WebSocket error for {user_id}: {exc}")
+        if "no close frame" in str(exc).lower():
+            pass  # abnormal close without WS handshake — not an error
+        else:
+            logger.error(f"Chat WebSocket error for {user_id}: {exc}")
         chat_agent.on_disconnect(user_id)
 
 @app.get("/api/revit-health")

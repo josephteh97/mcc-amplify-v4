@@ -594,6 +594,13 @@ class GeometryGenerator:
         z_mm = float(self.default_wall_height)  # beams sit at column-top elevation
 
         for elem in elements:
+            # Skip beams that the ValidationAgent flagged as causing Revit join errors
+            if "beam_column_join_conflict" in elem.get("dfma_violations", []):
+                logger.debug(
+                    "Framing id={} excluded — beam_column_join_conflict",
+                    elem.get("id", "?"),
+                )
+                continue
             bbox = elem.get("bbox")
             if not bbox or len(bbox) < 4:
                 continue

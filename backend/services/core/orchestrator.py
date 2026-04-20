@@ -268,6 +268,7 @@ class PipelineOrchestrator:
             # ── Stage 4c: Intelligence middleware (post-detection, pre-geometry) ──
             emit(observer.stage_started(job_id, 6, "Intelligence middleware"))
             progress(58, "Intelligence layer: type resolution & validation…")
+            framing_raw = [d for d in refined_detections if d.get("type") == "structural_framing"]
             _column_dets = []
             if column_raw and image_data.get("image") is not None:
                 _column_dets = resolve_types(column_raw, image_data["image"])
@@ -277,12 +278,17 @@ class PipelineOrchestrator:
                     max_grid_dist_px=float(os.getenv("MAX_GRID_DIST_PX", "80")),
                     isolation_radius_px=float(os.getenv("ISOLATION_RADIUS_PX", "200")),
                 )
-                _column_dets = enforce_rules(
-                    _column_dets,
-                    grid_info=grid_info,
-                    min_bay_mm=float(os.getenv("MIN_BAY_MM", "3000")),
-                    max_bay_mm=float(os.getenv("MAX_BAY_MM", "12000")),
-                )
+
+            # Always run enforce_rules on both columns + framing together so:
+            # 1. dfma_violations is always initialized (required by geometry_generator)
+            # 2. beam-column proximity check has full context even if column_raw is empty
+            # enforce_rules mutates dicts in-place — no need to re-split after the call.
+            enforce_rules(
+                _column_dets + framing_raw,
+                grid_info=grid_info,
+                min_bay_mm=float(os.getenv("MIN_BAY_MM", "3000")),
+                max_bay_mm=float(os.getenv("MAX_BAY_MM", "12000")),
+            )
 
             # ── Off-grid column deletion (Validation Agent enforcement) ─────
             # A column whose pixel centre is farther than max_grid_dist_px from

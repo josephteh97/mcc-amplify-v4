@@ -1,15 +1,20 @@
 """
-Validation Agent Middleware — DfMA rule enforcement, orphan detection.
+Validation Agent Middleware — DfMA rule enforcement, orphan and join-conflict detection.
 
 Applies Singapore SS CP 65 structural rules to validated detections:
   - Minimum column spacing (min_bay_mm default: 3000 mm)
   - Maximum column spacing (max_bay_mm default: 12000 mm)
   - Grid alignment enforcement (columns at known grid intersections)
   - Orphan element detection (columns flagged off_grid + isolated)
-  - Beam placement: beams must sit at the TOP of columns, flush with
-    the column top level line on the same floor (beam_not_at_column_top)
-  - Slab placement: slabs/floors must sit at the BOTTOM of the floor,
-    on the level line (slab_not_at_level)
+  - Beam–column proximity: a beam whose centre lies within one beam-width
+    of a column centre will cause a Revit "Cannot keep elements joined" error
+    at transaction commit → flagged as beam_column_join_conflict
+
+Element type vocabulary (aligns with Revit Structure panel):
+  "column"            → Structural Column
+  "structural_framing"→ Structural Framing (beam/lintel)
+  "slab"              → Floor (Revit calls structural floor slabs "Floor")
+  "wall"              → Structural Wall
 
 Adds to each detection dict:
   dfma_violations: list[str]  — empty = compliant
@@ -19,6 +24,7 @@ Adds to each detection dict:
 Does NOT remove elements. Does NOT modify coordinates.
 """
 from __future__ import annotations
+import math
 
 from loguru import logger
 
@@ -26,6 +32,9 @@ from backend.services.intelligence.cross_element_validator import OFF_GRID, ISOL
 
 _MIN_BAY_MM = 3000.0
 _MAX_BAY_MM = 12000.0
+# A beam whose centre is within this multiple of its own short-axis width from a column
+# centre will produce a Revit geometry-join error at transaction commit.
+_BEAM_COLUMN_JOIN_CLEARANCE_FACTOR = 1.5
 
 
 def enforce_rules(
@@ -37,6 +46,7 @@ def enforce_rules(
     """
     Attach DfMA violation flags and orphan status to each detection.
     grid_info used to derive mm spacing between detected columns.
+    Accepts a mixed list of columns + structural_framing for cross-type checks.
     """
     for det in detections:
         det["dfma_violations"] = []
@@ -46,8 +56,7 @@ def enforce_rules(
     if grid_info is not None:
         _check_bay_spacing(detections, grid_info, min_bay_mm, max_bay_mm)
 
-    _check_beam_placement(detections)
-    _check_slab_placement(detections)
+    _check_beam_column_proximity(detections)
 
     for det in detections:
         det["is_dfma_compliant"] = len(det["dfma_violations"]) == 0
@@ -89,84 +98,45 @@ def _check_bay_spacing(
             det["dfma_violations"].extend(violations)
 
 
-def _check_beam_placement(detections: list[dict]) -> None:
+def _check_beam_column_proximity(detections: list[dict]) -> None:
     """
-    Validate that beams are placed at the TOP of columns on the same floor.
+    Flag structural_framing elements whose centre is too close to a column centre.
 
-    Each beam's bottom elevation must be flush with the top-of-column level
-    line for its floor.  Beams that fail are flagged with
-    ``beam_not_at_column_top``.
+    When a beam and a column overlap significantly in plan, Revit's auto-join
+    algorithm fails with "Cannot keep elements joined" (37 unignorable errors).
+    A beam whose centre is within CLEARANCE_FACTOR × beam_short_dim of any
+    column centre is flagged as beam_column_join_conflict so the geometry
+    generator can omit it rather than send it to Revit.
+
+    Uses pixel-space centres (not yet converted to mm) because this check
+    runs before geometry generation.
     """
-    # Build a lookup: floor -> column top elevation(s)
-    column_tops_by_floor: dict[str, list[float]] = {}
-    for det in detections:
-        if det.get("label") == "column":
-            floor = det.get("floor")
-            top_el = det.get("top_elevation_mm")
-            if floor is not None and top_el is not None:
-                column_tops_by_floor.setdefault(floor, []).append(top_el)
+    columns  = [d for d in detections if d.get("type") == "column"]
+    framings = [d for d in detections if d.get("type") == "structural_framing"]
 
-    for det in detections:
-        if det.get("label") != "beam":
+    if not columns or not framings:
+        return
+
+    col_centres = [d.get("center", [0.0, 0.0]) for d in columns]
+
+    for beam in framings:
+        bc = beam.get("center", [0.0, 0.0])
+        bbox = beam.get("bbox", [0.0, 0.0, 0.0, 0.0])
+        if len(bbox) < 4:
             continue
 
-        floor = det.get("floor")
-        bottom_el = det.get("bottom_elevation_mm")
+        # Short-axis dimension in pixels — proxy for clearance zone
+        short_dim = min(abs(bbox[2] - bbox[0]), abs(bbox[3] - bbox[1]))
+        clearance = short_dim * _BEAM_COLUMN_JOIN_CLEARANCE_FACTOR
 
-        if floor is None or bottom_el is None:
-            # Insufficient metadata — skip without flagging
-            continue
-
-        col_tops = column_tops_by_floor.get(floor, [])
-        if not col_tops:
-            # No columns on this floor to compare against
-            continue
-
-        # Beam bottom must match at least one column top on the same floor
-        if not any(abs(bottom_el - ct) < 1e-3 for ct in col_tops):
-            det["dfma_violations"].append("beam_not_at_column_top")
-            logger.warning(
-                "Beam '%s' bottom elevation %.1f mm not flush with any "
-                "column top on floor %s",
-                det.get("id", "?"), bottom_el, floor,
-            )
-
-
-def _check_slab_placement(detections: list[dict]) -> None:
-    """
-    Validate that slabs sit at the level line (bottom of the floor).
-
-    Each slab's elevation must match the level-line elevation for its
-    floor.  Slabs that fail are flagged with ``slab_not_at_level``.
-    """
-    # Build a lookup: floor -> level-line elevation
-    level_by_floor: dict[str, float] = {}
-    for det in detections:
-        if det.get("label") == "level_line":
-            floor = det.get("floor")
-            elev = det.get("elevation_mm")
-            if floor is not None and elev is not None:
-                level_by_floor[floor] = elev
-
-    for det in detections:
-        if det.get("label") not in ("slab", "floor"):
-            continue
-
-        floor = det.get("floor")
-        bottom_el = det.get("bottom_elevation_mm")
-
-        if floor is None or bottom_el is None:
-            continue
-
-        level_el = level_by_floor.get(floor)
-        if level_el is None:
-            # No level line detected for this floor — skip
-            continue
-
-        if abs(bottom_el - level_el) >= 1e-3:
-            det["dfma_violations"].append("slab_not_at_level")
-            logger.warning(
-                "Slab '%s' bottom elevation %.1f mm not at level line "
-                "%.1f mm on floor %s",
-                det.get("id", "?"), bottom_el, level_el, floor,
-            )
+        for cc in col_centres:
+            dist = math.hypot(bc[0] - cc[0], bc[1] - cc[1])
+            if dist < clearance:
+                beam["dfma_violations"].append("beam_column_join_conflict")
+                logger.warning(
+                    "Framing id={} centre is {:.1f}px from column centre "
+                    "(clearance {:.1f}px) — Revit join error likely; "
+                    "element will be excluded from recipe",
+                    beam.get("id", "?"), dist, clearance,
+                )
+                break   # one conflict is enough to flag the beam
