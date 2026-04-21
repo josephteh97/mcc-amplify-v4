@@ -56,6 +56,7 @@ from backend.services.detection_agents import (
 from backend.services.intelligence.type_resolver import resolve_types
 from backend.services.intelligence.cross_element_validator import validate_elements, OFF_GRID
 from backend.services.intelligence.validation_agent import enforce_rules
+from backend.services.intelligence.debug_overlay import save_join_conflict_overlay
 from backend.services.intelligence.bim_translator_enricher import enrich_recipe
 from backend.services.intelligence.recipe_sanitizer import sanitize_recipe
 from backend.services.revit_warning_handler import handle_warnings as handle_revit_warnings
@@ -291,6 +292,16 @@ class PipelineOrchestrator:
                 min_bay_mm=float(os.getenv("MIN_BAY_MM", "3000")),
                 max_bay_mm=float(os.getenv("MAX_BAY_MM", "12000")),
             )
+
+            # Render a debug PNG highlighting beams the ValidationAgent rejected
+            # for beam-column join conflicts — lets the user eyeball which YOLO
+            # detections were dropped before recipe export.
+            if image_data.get("image") is not None:
+                save_join_conflict_overlay(
+                    image_data["image"],
+                    _column_dets + framing_raw,
+                    f"data/debug/{job_id}_join_conflicts.png",
+                )
 
             # ── Off-grid column deletion (Validation Agent enforcement) ─────
             # A column whose pixel centre is farther than max_grid_dist_px from

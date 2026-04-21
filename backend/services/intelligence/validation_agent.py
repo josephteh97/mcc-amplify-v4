@@ -117,8 +117,6 @@ def _check_beam_column_proximity(detections: list[dict]) -> None:
     if not columns or not framings:
         return
 
-    col_centres = [d.get("center", [0.0, 0.0]) for d in columns]
-
     for beam in framings:
         bc = beam.get("center", [0.0, 0.0])
         bbox = beam.get("bbox", [0.0, 0.0, 0.0, 0.0])
@@ -129,14 +127,21 @@ def _check_beam_column_proximity(detections: list[dict]) -> None:
         short_dim = min(abs(bbox[2] - bbox[0]), abs(bbox[3] - bbox[1]))
         clearance = short_dim * _BEAM_COLUMN_JOIN_CLEARANCE_FACTOR
 
-        for cc in col_centres:
+        for col in columns:
+            cc = col.get("center", [0.0, 0.0])
             dist = math.hypot(bc[0] - cc[0], bc[1] - cc[1])
             if dist < clearance:
                 beam["dfma_violations"].append("beam_column_join_conflict")
+                # Stash references so the orchestrator can render a debug overlay.
+                beam["conflict_column_id"] = col.get("id", "?")
+                beam["conflict_column_center"] = list(cc)
                 logger.warning(
-                    "Framing id={} centre is {:.1f}px from column centre "
-                    "(clearance {:.1f}px) — Revit join error likely; "
-                    "element will be excluded from recipe",
-                    beam.get("id", "?"), dist, clearance,
+                    "Framing {} @ px({:.0f},{:.0f}) bbox={} conflicts with "
+                    "column {} @ px({:.0f},{:.0f}) — dist {:.1f}px < clearance "
+                    "{:.1f}px → excluded (would cause Revit join error)",
+                    beam.get("id", "?"), bc[0], bc[1],
+                    [f"{v:.0f}" for v in bbox],
+                    col.get("id", "?"), cc[0], cc[1],
+                    dist, clearance,
                 )
                 break   # one conflict is enough to flag the beam

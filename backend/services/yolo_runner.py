@@ -182,7 +182,11 @@ def run_yolo(
                 by1 = float(y1 * coord_scale)
                 bx2 = float(x2 * coord_scale)
                 by2 = float(y2 * coord_scale)
+                # Stable per-run ID so downstream warnings can refer to a
+                # specific detection (e.g. "structural_framing_17").
+                det_id = f"{element_type}_{len(detections)}"
                 detections.append({
+                    "id":         det_id,
                     "type":       element_type,
                     "bbox":       [bx1, by1, bx2, by2],
                     "center":     [(bx1 + bx2) / 2, (by1 + by2) / 2],
