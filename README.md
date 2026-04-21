@@ -51,7 +51,7 @@ Both machines must be on the same local network (or VPN). The Ubuntu machine is 
 ## Pipeline Stages
 
 ```mermaid
-flowchart LR
+flowchart TB
     PDF(["📄 PDF"])
 
     PDF --> SEC
@@ -75,7 +75,7 @@ flowchart LR
     SRC --> AGENTS
 
     subgraph AGENTS["Stage 3 — Parallel Detection  ·  asyncio.gather"]
-        direction TB
+        direction LR
         GRID["Grid Agent
         structural grid → mm scale"]
         COL["Column Agent
@@ -92,9 +92,10 @@ flowchart LR
     HybridFusionPipeline · grid pixel alignment
     {bbox, center, confidence} → pixel coords"]
 
-    MERGE --> INT
+    MERGE --> INTBOX
 
     subgraph INTBOX["Stage 4c — Intelligence Middleware"]
+        direction TB
         INT["TypeResolver
         cv2 contour → circular / rectangular / L-shape"]
         INT --> CEV["CrossElementValidator
@@ -106,8 +107,8 @@ flowchart LR
         data/debug/{job}_join_conflicts.png"])
     end
 
-    CEV -- "⚠️ flagged" --> EP
-    VAL --> SEM
+    CEV -. "⚠️ flagged" .-> EP
+    INTBOX --> SEMBOX
 
     subgraph SEMBOX["Stage 5 — Semantic AI  (Ollama)"]
         SEM["Column annotation · SemanticAnalyzer
@@ -115,12 +116,12 @@ flowchart LR
         materials · dimensions · building type"]
     end
 
-    SEM --> GEO["Stage 6 — Geometry Generation
+    SEMBOX --> GEO["Stage 6 — Geometry Generation
     _px_to_world · _snap_to_nearest_grid
     Beam Z = Level 1 elevation (flush with column tops)
     Join-conflict framing excluded from recipe"]
 
-    GEO --> BTE
+    GEO --> BTEBOX
 
     subgraph BTEBOX["Stage 6.5 — BIM Enrichment + Dedup"]
         BTE["BIMTranslatorEnricher
@@ -128,7 +129,7 @@ flowchart LR
         Deduplicate columns at same grid point (0.1 mm)"]
     end
 
-    BTE --> SAN
+    BTEBOX --> SANBOX
 
     subgraph SANBOX["Stage 6.7 — Pre-Export Sanitizer"]
         SAN["sanitize_recipe()
@@ -137,9 +138,11 @@ flowchart LR
         Clamp column size ≥ 200 mm (Revit extrusion floor)"]
     end
 
-    SAN --> RVTBOX & GLTBOX
+    SANBOX --> RVTBOX
+    SANBOX --> GLTBOX
 
     subgraph RVTBOX["Stage 7a — RVT Export  (Linux → Windows)"]
+        direction TB
         EXP["RevitClient · HTTP POST → :5000
         GetOrDuplicateSizedType: per-size FamilySymbol
         WarningCollector auto-resolves join errors"]
@@ -158,9 +161,11 @@ flowchart LR
         columns · framing · walls · slabs"]
     end
 
-    RVT & GLTF --> UIBOX
+    RVTBOX --> UIBOX
+    GLTBOX --> UIBOX
 
     subgraph UIBOX["Frontend  ·  React + Three.js"]
+        direction LR
         EP["Edit Panel
         manual corrections"]
         VW["3D Viewer"]
@@ -168,7 +173,7 @@ flowchart LR
         Ollama · qwen3-vl / gemma3"]
     end
 
-    EP -- "edit + rebuild" --> MERGE
+    EP -. "edit + rebuild" .-> MERGE
 ```
 
 ### Stage Summary
