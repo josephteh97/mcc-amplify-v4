@@ -132,8 +132,8 @@ def _check_beam_column_proximity(detections: list[dict]) -> None:
             dist = math.hypot(bc[0] - cc[0], bc[1] - cc[1])
             if dist < clearance:
                 beam["dfma_violations"].append("beam_column_join_conflict")
-                # Stash references so the orchestrator can render a debug overlay.
-                beam["conflict_column_id"] = col.get("id", "?")
+                # conflict_column_center is read by debug_overlay to draw a line
+                # back to the offender; without it the renderer can't indicate which.
                 beam["conflict_column_center"] = list(cc)
                 logger.warning(
                     "Framing {} @ px({:.0f},{:.0f}) bbox={} conflicts with "

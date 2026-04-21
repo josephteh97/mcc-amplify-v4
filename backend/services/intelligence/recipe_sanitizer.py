@@ -139,7 +139,7 @@ def _snap_and_filter_framing(
             continue
 
         sp, ep = beam["start_point"], beam["end_point"]
-        dx = ep["x"] - sp["x"]   # already floats (set by snap above)
+        dx = ep["x"] - sp["x"]
         dy = ep["y"] - sp["y"]
         length = math.hypot(dx, dy)
 
