@@ -53,122 +53,113 @@ Both machines must be on the same local network (or VPN). The Ubuntu machine is 
 
 ```mermaid
 flowchart TB
-    PDF(["📄 PDF"])
+    PDF(["📄 PDF input"])
+    PDF --> PIPE
 
-    PDF --> SEC
-
-    subgraph SEC["Stage 1 — Security & Size Check"]
-        sec["SecurePDFRenderer
-        Validate magic bytes
-        150 MP pixel budget · 300 DPI up to A0"]
-    end
-
-    SEC --> SRC
-
-    subgraph SRC["Stage 2 — Source Data  (parallel I/O)"]
-        direction LR
-        VEC["VectorProcessor
-        PDF paths + text spans"]
-        RAS["StreamingProcessor
-        300 DPI raster render"]
-    end
-
-    SRC --> AGENTS
-
-    subgraph AGENTS["Stage 3 — Parallel Detection  ·  asyncio.gather"]
+    subgraph PIPE["🏗️ Pipeline"]
         direction TB
-        GRID["🧮 <b>GridDetector</b>  (algorithmic — no ML)
-        PyMuPDF text extraction · label ↔ position pairing
-        structural grid → mm scale"]
-        subgraph MLAGENTS["🧠 ML Detection Agents  (YOLO)"]
-            direction LR
-            COL["Column Agent
-            column-detect.pt  ✅"]
-            FRAME["Framing Agent
-            structural-framing.pt  ✅"]
-            WALL["Wall Agent  🚧"]
-            STAIR["Stairs Agent  🚧"]
-            LIFT["Lift Agent  🚧"]
-            SLAB["Slab Agent  🚧"]
+
+        subgraph SEC["Stage 1 — Security & Size Check"]
+            sec["SecurePDFRenderer
+            Validate magic bytes
+            150 MP pixel budget · 300 DPI up to A0"]
         end
-    end
 
-    AGENTS --> MERGE["Stage 4 — Detection Merger
-    HybridFusionPipeline · grid pixel alignment
-    {bbox, center, confidence} → pixel coords"]
+        subgraph SRC["Stage 2 — Source Data  (parallel I/O)"]
+            direction LR
+            VEC["VectorProcessor
+            PDF paths + text spans"]
+            RAS["StreamingProcessor
+            300 DPI raster render"]
+        end
 
-    MERGE --> INTBOX
+        subgraph AGENTS["Stage 3 — Parallel Detection  ·  asyncio.gather"]
+            direction TB
+            GRID["🧮 <b>GridDetector</b>  (algorithmic — no ML)
+            PyMuPDF text extraction · label ↔ position pairing
+            structural grid → mm scale"]
+            subgraph MLAGENTS["🧠 ML Detection Agents  (YOLO)"]
+                direction LR
+                COL["Column Agent
+                column-detect.pt  ✅"]
+                FRAME["Framing Agent
+                structural-framing.pt  ✅"]
+                WALL["Wall Agent  🚧"]
+                STAIR["Stairs Agent  🚧"]
+                LIFT["Lift Agent  🚧"]
+                SLAB["Slab Agent  🚧"]
+            end
+        end
 
-    subgraph INTBOX["Stage 4c — Intelligence Middleware"]
-        direction TB
-        INT["TypeResolver
-        cv2 contour → circular / rectangular / L-shape"]
-        INT --> CEV["CrossElementValidator
-        IoU overlap · grid distance · isolation"]
-        CEV --> VAL["ValidationAgent
-        DfMA SS CP 65 · bay spacing
-        beam-column join-conflict detection"]
-        VAL --> DBG(["🖼️ debug PNG
-        data/debug/{job}_join_conflicts.png"])
-    end
+        MERGE["Stage 4 — Detection Merger
+        HybridFusionPipeline · grid pixel alignment
+        {bbox, center, confidence} → pixel coords"]
 
-    CEV -. "⚠️ flagged" .-> EP
-    INTBOX --> SEMBOX
+        subgraph INTBOX["Stage 4c — Intelligence Middleware"]
+            direction TB
+            INT["TypeResolver
+            cv2 contour → circular / rectangular / L-shape"]
+            INT --> CEV["CrossElementValidator
+            IoU overlap · grid distance · isolation"]
+            CEV --> VAL["ValidationAgent
+            DfMA SS CP 65 · bay spacing
+            beam-column join-conflict detection"]
+            VAL --> DBG(["🖼️ debug PNG
+            data/debug/{job}_join_conflicts.png"])
+        end
 
-    subgraph SEMBOX["Stage 5 — Semantic AI  (Ollama)"]
-        SEM["Column annotation · SemanticAnalyzer
-        aisingapore/Gemma-SEA-LION-v4-4B-VL
-        materials · dimensions · building type"]
-    end
+        subgraph SEMBOX["Stage 5 — Semantic AI  (Ollama)"]
+            SEM["Column annotation · SemanticAnalyzer
+            aisingapore/Gemma-SEA-LION-v4-4B-VL
+            materials · dimensions · building type"]
+        end
 
-    SEMBOX --> GEO["Stage 6 — Geometry Generation
-    _px_to_world · _snap_to_nearest_grid
-    Beam Z = Level 1 elevation (flush with column tops)
-    Join-conflict framing excluded from recipe"]
+        GEO["Stage 6 — Geometry Generation
+        _px_to_world · _snap_to_nearest_grid
+        Beam Z = Level 1 elevation (flush with column tops)
+        Join-conflict framing excluded from recipe"]
 
-    GEO --> BTEBOX
+        subgraph BTEBOX["Stage 6.5 — BIM Enrichment + Dedup"]
+            BTE["BIMTranslatorEnricher
+            Merge intelligence metadata into recipe
+            Deduplicate columns at same grid point (0.1 mm)"]
+        end
 
-    subgraph BTEBOX["Stage 6.5 — BIM Enrichment + Dedup"]
-        BTE["BIMTranslatorEnricher
-        Merge intelligence metadata into recipe
-        Deduplicate columns at same grid point (0.1 mm)"]
-    end
+        subgraph SANBOX["Stage 6.7 — Pre-Export Sanitizer"]
+            SAN["sanitize_recipe()
+            Snap beam endpoints to column centres
+            Reject floating / diagonal / &lt; 500 mm beams
+            Clamp column size ≥ 200 mm (Revit extrusion floor)"]
+        end
 
-    BTEBOX --> SANBOX
+        subgraph EXPORTBOX["Stage 7 — Export  (RVT + glTF run in parallel)"]
+            direction TB
+            subgraph RVTBOX["Stage 7a — RVT Export  (Linux → Windows)"]
+                direction TB
+                EXP["RevitClient · HTTP POST → :5000
+                GetOrDuplicateSizedType: per-size FamilySymbol
+                WarningCollector auto-resolves join errors"]
+                EXP --> WRN{"Revit warnings?"}
+                WRN -->|"yes · attempt ≤ 3"| FIX["SemanticAnalyzer
+                analyze_revit_warnings()
+                patch whitelisted fields"]
+                FIX -->|resend recipe| EXP
+            end
+            subgraph GLTBOX["Stage 7b — glTF Export"]
+                GLTF["GltfExporter
+                Z-up → Y-up rotation
+                Columns extrude to top_level elevation
+                columns · framing · walls · slabs"]
+            end
+        end
 
-    subgraph SANBOX["Stage 6.7 — Pre-Export Sanitizer"]
-        SAN["sanitize_recipe()
-        Snap beam endpoints to column centres
-        Reject floating / diagonal / &lt; 500 mm beams
-        Clamp column size ≥ 200 mm (Revit extrusion floor)"]
-    end
-
-    SANBOX --> RVTBOX
-    SANBOX --> GLTBOX
-
-    subgraph RVTBOX["Stage 7a — RVT Export  (Linux → Windows)"]
-        direction TB
-        EXP["RevitClient · HTTP POST → :5000
-        GetOrDuplicateSizedType: per-size FamilySymbol
-        WarningCollector auto-resolves join errors"]
-        EXP --> WRN{"Revit warnings?"}
-        WRN -->|"yes · attempt ≤ 3"| FIX["SemanticAnalyzer
-        analyze_revit_warnings()
-        patch whitelisted fields"]
-        FIX -->|resend recipe| EXP
-    end
-
-    subgraph GLTBOX["Stage 7b — glTF Export"]
-        GLTF["GltfExporter
-        Z-up → Y-up rotation
-        Columns extrude to top_level elevation
-        columns · framing · walls · slabs"]
+        SEC --> SRC --> AGENTS --> MERGE --> INTBOX --> SEMBOX --> GEO --> BTEBOX --> SANBOX --> EXPORTBOX
     end
 
     WRN -->|"no / accepted"| RVT
     GLTF --> GLB
 
-    subgraph OUT["📤 Pipeline Outputs  (deliverables)"]
+    subgraph OUT["📤 Generated Outputs  (outside the pipeline)"]
         direction LR
         RVT(["📦 <b>.rvt file</b>
         native Revit model
@@ -178,23 +169,12 @@ flowchart TB
         data/models/gltf/{job}.glb"])
     end
 
-    OUT --> UIBOX
-
-    subgraph UIBOX["Frontend  ·  React + Three.js"]
-        direction LR
-        EP["Edit Panel
-        manual corrections"]
-        VW["3D Viewer"]
-        CHAT["AI Chat
-        Ollama · qwen3-vl / gemma3"]
-    end
-
-    EP -. "edit + rebuild" .-> MERGE
-
     classDef output fill:#d4edda,stroke:#28a745,stroke-width:3px,color:#155724
     class RVT,GLB output
     classDef algo fill:#fff3cd,stroke:#856404,stroke-width:2px,color:#856404
     class GRID algo
+    classDef pipeline fill:#f8f9fa,stroke:#6c757d,stroke-width:2px
+    class PIPE pipeline
 ```
 
 ### Stage Summary
