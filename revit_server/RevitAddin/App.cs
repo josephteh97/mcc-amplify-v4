@@ -1781,15 +1781,35 @@ namespace RevitModelBuilderAddin
 
     internal static class FailureHelpers
     {
-        // Revit 2023's FailureResolutionType enum has no dedicated "Unjoin"
-        // value — the "Unjoin Elements" button on Revit's native dialog is
-        // surfaced through DetachElements (or, for some variants, via the
-        // default resolution which we fall through to via DeleteWarning).
+        // Preferred resolution order for join failures. Omits the "Others"
+        // catch-all (Tier 3 probe handles it last) and unsafe types.
         public static readonly FailureResolutionType[] JoinResolutionLadder =
         {
             FailureResolutionType.DetachElements,
+            FailureResolutionType.FixElements,
             FailureResolutionType.SkipElements,
         };
+
+        // Never apply these as a blind fallback: they either abort the
+        // transaction (QuitEditMode), have no semantics (Invalid/Default),
+        // or are too destructive (DeleteElements).
+        private static readonly HashSet<FailureResolutionType> _unsafeTypes =
+            new HashSet<FailureResolutionType>
+            {
+                FailureResolutionType.Invalid,
+                FailureResolutionType.Default,
+                FailureResolutionType.QuitEditMode,
+                FailureResolutionType.DeleteElements,
+            };
+
+        // Precomputed Tier-3 probe set: every enum value that isn't unsafe
+        // and isn't already covered by the named ladder. Cached once to
+        // avoid per-call Enum.GetValues reflection in the hot path.
+        private static readonly FailureResolutionType[] _probeTypes =
+            ((FailureResolutionType[])Enum.GetValues(typeof(FailureResolutionType)))
+                .Where(t => !_unsafeTypes.Contains(t)
+                         && Array.IndexOf(JoinResolutionLadder, t) < 0)
+                .ToArray();
 
         public static bool IsJoinError(string text)
         {
@@ -1799,26 +1819,57 @@ namespace RevitModelBuilderAddin
                  && text.IndexOf("join",       StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
-        // Try JoinResolutionLadder in order; returns the type applied, or null
-        // if nothing resolved. As a last resort dismisses the warning via
-        // DeleteWarning so the transaction proceeds (Revit auto-unjoins
-        // geometry that can't stay joined).
+        /// <summary>
+        /// Resolves a "Can't keep elements joined" failure by trying, in order:
+        /// (1) Revit's pre-selected default resolution — matches the dialog's
+        /// highlighted "Unjoin Elements" button; (2) the named ladder of
+        /// preferred resolution types; (3) any remaining applicable enum
+        /// value. For Warning-severity messages that remain unresolved,
+        /// dismisses via DeleteWarning. Returns the type applied, or null.
+        /// </summary>
         public static FailureResolutionType? TryApplyJoinResolution(
             FailuresAccessor fa, FailureMessageAccessor msg)
         {
-            foreach (var resType in JoinResolutionLadder)
+            if (!msg.HasResolutions())
             {
-                if (!msg.HasResolutionOfType(resType)) continue;
-                try
-                {
-                    msg.SetCurrentResolutionType(resType);
-                    fa.ResolveFailure(msg);
-                    return resType;
-                }
-                catch { /* try next resolution type */ }
+                if (msg.GetSeverity() == FailureSeverity.Warning)
+                    try { fa.DeleteWarning(msg); } catch { /* best effort */ }
+                return null;
             }
-            try { fa.DeleteWarning(msg); } catch { /* best effort */ }
+
+            try
+            {
+                var current = msg.GetCurrentResolutionType();
+                if (!_unsafeTypes.Contains(current))
+                {
+                    fa.ResolveFailure(msg);
+                    return current;
+                }
+            }
+            catch { /* fall through */ }
+
+            foreach (var t in JoinResolutionLadder)
+                if (TryResolveType(fa, msg, t)) return t;
+
+            foreach (var t in _probeTypes)
+                if (TryResolveType(fa, msg, t)) return t;
+
+            if (msg.GetSeverity() == FailureSeverity.Warning)
+                try { fa.DeleteWarning(msg); } catch { /* best effort */ }
             return null;
+        }
+
+        private static bool TryResolveType(
+            FailuresAccessor fa, FailureMessageAccessor msg, FailureResolutionType resType)
+        {
+            try
+            {
+                if (!msg.HasResolutionOfType(resType)) return false;
+                msg.SetCurrentResolutionType(resType);
+                fa.ResolveFailure(msg);
+                return true;
+            }
+            catch { return false; }
         }
     }
 
