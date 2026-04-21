@@ -1781,15 +1781,14 @@ namespace RevitModelBuilderAddin
 
     internal static class FailureHelpers
     {
-        // Preference order for "Cannot keep elements joined" resolutions.
-        // UnjoinElements matches the "Unjoin Elements" button on Revit's native
-        // dialog and is the canonical fix; SkipElements/DetachElements are
-        // fallbacks for join failures that don't expose UnjoinElements.
+        // Revit 2023's FailureResolutionType enum has no dedicated "Unjoin"
+        // value — the "Unjoin Elements" button on Revit's native dialog is
+        // surfaced through DetachElements (or, for some variants, via the
+        // default resolution which we fall through to via DeleteWarning).
         public static readonly FailureResolutionType[] JoinResolutionLadder =
         {
-            FailureResolutionType.UnjoinElements,
-            FailureResolutionType.SkipElements,
             FailureResolutionType.DetachElements,
+            FailureResolutionType.SkipElements,
         };
 
         public static bool IsJoinError(string text)
@@ -1801,7 +1800,9 @@ namespace RevitModelBuilderAddin
         }
 
         // Try JoinResolutionLadder in order; returns the type applied, or null
-        // if nothing resolved.
+        // if nothing resolved. As a last resort dismisses the warning via
+        // DeleteWarning so the transaction proceeds (Revit auto-unjoins
+        // geometry that can't stay joined).
         public static FailureResolutionType? TryApplyJoinResolution(
             FailuresAccessor fa, FailureMessageAccessor msg)
         {
@@ -1816,6 +1817,7 @@ namespace RevitModelBuilderAddin
                 }
                 catch { /* try next resolution type */ }
             }
+            try { fa.DeleteWarning(msg); } catch { /* best effort */ }
             return null;
         }
     }
