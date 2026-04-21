@@ -26,6 +26,14 @@ class GltfExporter:
 
         scene = trimesh.Scene()
 
+        # Level name → elevation mm. Used so columns extend to their top-level
+        # elevation (matching Revit) rather than a standalone `height` field —
+        # otherwise beams placed at Level 1 elevation float above column tops.
+        level_elev = {
+            l["name"]: float(l.get("elevation", 0))
+            for l in geometry_data.get("levels", [])
+        }
+
         for idx, wall in enumerate(geometry_data.get("walls", [])):
             m = self._wall_mesh(wall)
             if m is not None:
@@ -33,7 +41,7 @@ class GltfExporter:
                 scene.add_geometry(m, geom_name=f"wall_{idx}")
 
         for idx, col in enumerate(geometry_data.get("columns", [])):
-            m = self._column_mesh(col)
+            m = self._column_mesh(col, level_elev)
             if m is not None:
                 m.visual.face_colors = [150, 150, 150, 255]
                 scene.add_geometry(m, geom_name=f"column_{idx}")
@@ -113,17 +121,29 @@ class GltfExporter:
             logger.debug(f"Wall mesh skipped: {exc}")
             return None
 
-    def _column_mesh(self, col: dict):
+    def _column_mesh(self, col: dict, level_elev: dict):
         try:
-            loc    = col["location"]
-            width  = float(col.get("width",  300))
-            depth  = float(col.get("depth",  300))
-            height = float(col.get("height", 2800))
+            loc   = col["location"]
+            width = float(col.get("width",  300))
+            depth = float(col.get("depth",  300))
+
+            # Prefer base/top-level elevations (match Revit) over standalone
+            # `height` — latter is a room ceiling metric that undershoots the
+            # storey. Fall back to `height` only when levels aren't provided.
+            base_elev = level_elev.get(col.get("level", "Level 0"), 0.0)
+            top_elev  = level_elev.get(col.get("top_level", "Level 1"))
+            if top_elev is None:
+                top_elev = base_elev + float(col.get("height", 2800))
+            height = top_elev - base_elev
+            if height <= 0:
+                return None
+
             if col.get("shape") == "circular":
                 mesh = trimesh.creation.cylinder(radius=width / 2, height=height)
             else:
                 mesh = trimesh.creation.box(extents=[width, depth, height])
-            T = trimesh.transformations.translation_matrix([loc["x"], loc["y"], height / 2])
+            T = trimesh.transformations.translation_matrix(
+                [loc["x"], loc["y"], base_elev + height / 2])
             mesh.apply_transform(T)
             return mesh
         except Exception as exc:
