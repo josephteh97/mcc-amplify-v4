@@ -102,6 +102,8 @@ flowchart LR
         CEV --> VAL["ValidationAgent
         DfMA SS CP 65 · bay spacing
         beam-column join-conflict detection"]
+        VAL --> DBG(["🖼️ debug PNG
+        data/debug/{job}_join_conflicts.png"])
     end
 
     CEV -- "⚠️ flagged" --> EP
@@ -115,6 +117,7 @@ flowchart LR
 
     SEM --> GEO["Stage 6 — Geometry Generation
     _px_to_world · _snap_to_nearest_grid
+    Beam Z = Level 1 elevation (flush with column tops)
     Join-conflict framing excluded from recipe"]
 
     GEO --> BTE
@@ -125,10 +128,20 @@ flowchart LR
         Deduplicate columns at same grid point (0.1 mm)"]
     end
 
-    BTE --> RVTBOX & GLTBOX
+    BTE --> SAN
+
+    subgraph SANBOX["Stage 6.7 — Pre-Export Sanitizer"]
+        SAN["sanitize_recipe()
+        Snap beam endpoints to column centres
+        Reject floating / diagonal / &lt; 500 mm beams
+        Clamp column size ≥ 200 mm (Revit extrusion floor)"]
+    end
+
+    SAN --> RVTBOX & GLTBOX
 
     subgraph RVTBOX["Stage 7a — RVT Export  (Linux → Windows)"]
         EXP["RevitClient · HTTP POST → :5000
+        GetOrDuplicateSizedType: per-size FamilySymbol
         WarningCollector auto-resolves join errors"]
         EXP --> WRN{"Revit warnings?"}
         WRN -->|"yes · attempt ≤ 3"| FIX["SemanticAnalyzer
@@ -141,6 +154,7 @@ flowchart LR
     subgraph GLTBOX["Stage 7b — glTF Export"]
         GLTF["GltfExporter
         Z-up → Y-up rotation
+        Columns extrude to top_level elevation
         columns · framing · walls · slabs"]
     end
 
@@ -165,12 +179,13 @@ flowchart LR
 | 2 | Source data (parallel I/O) | `VectorProcessor` + `StreamingProcessor` | PDF paths/text spans + 300 DPI raster render, run concurrently |
 | 3 | Parallel detection agents | Grid · Column · Structural Framing · Stairs · Lift · Wall · Slab | All 7 agents run concurrently via `asyncio.gather`; each returns `{bbox, center, confidence}` dicts |
 | 4 | Detection merger | `HybridFusionPipeline` / `GridDetector` | Fuses agent outputs, snaps to vector geometry, resolves pixel → mm coordinate space |
-| 4c | Intelligence middleware | `resolve_types` / `validate_elements` / `enforce_rules` | cv2 contour type classification; IoU/grid/isolation validation; DfMA bay-spacing rules (SS CP 65); beam-column join-conflict detection |
+| 4c | Intelligence middleware | `resolve_types` / `validate_elements` / `enforce_rules` | cv2 contour type classification; IoU/grid/isolation validation; DfMA bay-spacing rules (SS CP 65); beam-column join-conflict detection; writes debug PNG of rejected beams |
 | 5 | Semantic AI | `SemanticAnalyzer` (Ollama) | `aisingapore/Gemma-SEA-LION-v4-4B-VL` — column annotation, materials, building type inference |
-| 6 | Geometry generation | `GeometryGenerator` | `_px_to_world` → `_snap_to_nearest_grid` → Revit recipe; excludes beams flagged `beam_column_join_conflict` |
+| 6 | Geometry generation | `GeometryGenerator` | `_px_to_world` → `_snap_to_nearest_grid` → Revit recipe; beams placed at Level 1 elevation (flush with column tops); excludes beams flagged `beam_column_join_conflict` |
 | 6.5 | BIM enrichment + dedup | `BIMTranslatorEnricher` | Merges intelligence metadata; deduplicates elements at same grid intersection (rounds to 0.1 mm) |
-| 7a | RVT export | `RvtExporter` + Revit Add-in | Sends recipe to Windows Revit; AI correction loop (max 3 rounds) on warnings; `WarningCollector` auto-resolves join errors |
-| 7b | glTF export | `GltfExporter` | Writes `.glb` (Z-up → Y-up); renders columns, framing, walls, slabs |
+| 6.7 | Pre-export sanitizer | `sanitize_recipe` | Snaps beam endpoints to nearest column centre; rejects floating / diagonal / sub-500 mm beams; clamps column size ≥ 200 mm (Revit extrusion floor) |
+| 7a | RVT export | `RvtExporter` + Revit Add-in | Sends recipe to Windows Revit; per-size `FamilySymbol` duplication via `GetOrDuplicateSizedType`; AI correction loop (max 3 rounds) on warnings; `WarningCollector` auto-resolves join errors |
+| 7b | glTF export | `GltfExporter` | Writes `.glb` (Z-up → Y-up); columns extrude to their `top_level` elevation so beams sit flush; renders columns, framing, walls, slabs |
 
 ---
 
@@ -248,7 +263,9 @@ mcc-amplify-v4/
 |   |   |-- intelligence/              <- Post-detection middleware layer
 |   |   |   |-- type_resolver.py       <- Circular/rectangular/L-shape classification
 |   |   |   |-- cross_element_validator.py <- IoU, grid distance, isolation checks
-|   |   |   |-- validation_agent.py    <- DfMA rule enforcement (SS CP 65)
+|   |   |   |-- validation_agent.py    <- DfMA rule enforcement (SS CP 65) + join-conflict detection
+|   |   |   |-- debug_overlay.py       <- PNG of beams rejected for join-conflict (data/debug/)
+|   |   |   |-- recipe_sanitizer.py    <- Pre-export cleanup: snap/filter beams, clamp column min size
 |   |   |   └-- bim_translator_enricher.py <- Append metadata to Revit recipe
 |   |   |-- exporters/
 |   |   |   |-- rvt_exporter.py        <- Sends to Windows, receives .RVT
