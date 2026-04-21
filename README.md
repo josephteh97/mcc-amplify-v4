@@ -8,7 +8,7 @@ AI-powered system that converts PDF floor plans into native Revit (`.RVT`) BIM m
 
 Upload a PDF architectural floor plan and receive a fully-formed, editable Revit file. No manual re-drawing, no IFC round-trips. The system:
 
-1. Runs **7 detection agents in parallel** — one for each structural element type (column, structural framing, stairs, lift, wall, slab) plus a grid detection agent that derives the real-world coordinate scale from dimension annotations. Scale text (e.g. "1:100") is intentionally ignored as unreliable.
+1. Runs **6 ML detection agents** (column, structural framing, stairs, lift, wall, slab) **in parallel with an algorithmic `GridDetector`** — the latter derives the real-world coordinate scale directly from PDF vector text (grid labels + dimension annotations), not from a model. Scale text (e.g. "1:100") is intentionally ignored as unreliable.
 2. Merges all agent outputs, snaps detections to the PDF vector geometry, and resolves pixel coordinates into real-world mm using the detected grid.
 3. Runs an **intelligence middleware layer** — type resolution (circular/rectangular/L-shape via cv2 contour analysis), cross-element validation (IoU overlap, grid distance, isolation checks), and DfMA rule enforcement (SS CP 65). Suspicious elements are flagged for the Edit Panel; beams whose placement would trigger Revit join conflicts are excluded from the recipe.
 4. Enriches the Revit recipe with intelligence metadata (resolved type, validation flags, DfMA compliance status) then deduplicates elements that snapped to the same grid intersection.
@@ -26,9 +26,10 @@ Ubuntu (Linux) Machine                      Windows Machine
 |  +----------------------------------+  |  |  +----------------------------+  |
 |  |  PDF Security (150 MP budget)    |  |  |  |  C# Add-in (RevitAddin)    |  |
 |  |  Source: Vector + Raster (para.) |  |  |  |  TcpListener TCP :5000     |  |
-|  |  7 Parallel Detection Agents     |  |  |  |  Receives JSON recipe      |  |
-|  |   Grid · Col · Frame · Wall ·    |  |  |  |  Builds columns/framing/   |  |
-|  |   Stairs · Lift · Slab           |  |  |  |  walls/slabs natively      |  |
+|  |  GridDetector (algorithmic)      |  |  |  |  Receives JSON recipe      |  |
+|  |   + 6 ML Detection Agents (YOLO) |  |  |  |  Builds columns/framing/   |  |
+|  |   Col · Frame · Wall · Stairs ·  |  |  |  |  walls/slabs natively      |  |
+|  |   Lift · Slab                    |  |  |  |                            |  |
 |  |  Detection Merger (grid align)   |  |  |  |  WarningCollector          |  |
 |  |  Intelligence (TypeResolver →    |--+--+->|  auto-resolves join errors |  |
 |  |   CrossElemValidator →           |  |  |  |  Returns .RVT binary       |  |
@@ -75,17 +76,21 @@ flowchart TB
     SRC --> AGENTS
 
     subgraph AGENTS["Stage 3 — Parallel Detection  ·  asyncio.gather"]
-        direction LR
-        GRID["Grid Agent
+        direction TB
+        GRID["🧮 <b>GridDetector</b>  (algorithmic — no ML)
+        PyMuPDF text extraction · label ↔ position pairing
         structural grid → mm scale"]
-        COL["Column Agent
-        column-detect.pt  ✅"]
-        FRAME["Framing Agent
-        structural-framing.pt  ✅"]
-        WALL["Wall Agent  🚧"]
-        STAIR["Stairs Agent  🚧"]
-        LIFT["Lift Agent  🚧"]
-        SLAB["Slab Agent  🚧"]
+        subgraph MLAGENTS["🧠 ML Detection Agents  (YOLO)"]
+            direction LR
+            COL["Column Agent
+            column-detect.pt  ✅"]
+            FRAME["Framing Agent
+            structural-framing.pt  ✅"]
+            WALL["Wall Agent  🚧"]
+            STAIR["Stairs Agent  🚧"]
+            LIFT["Lift Agent  🚧"]
+            SLAB["Slab Agent  🚧"]
+        end
     end
 
     AGENTS --> MERGE["Stage 4 — Detection Merger
@@ -151,7 +156,6 @@ flowchart TB
         analyze_revit_warnings()
         patch whitelisted fields"]
         FIX -->|resend recipe| EXP
-        WRN -->|"no / accepted"| RVT[".rvt file"]
     end
 
     subgraph GLTBOX["Stage 7b — glTF Export"]
@@ -161,8 +165,20 @@ flowchart TB
         columns · framing · walls · slabs"]
     end
 
-    RVTBOX --> UIBOX
-    GLTBOX --> UIBOX
+    WRN -->|"no / accepted"| RVT
+    GLTF --> GLB
+
+    subgraph OUT["📤 Pipeline Outputs  (deliverables)"]
+        direction LR
+        RVT(["📦 <b>.rvt file</b>
+        native Revit model
+        data/models/rvt/{job}.rvt"])
+        GLB(["🌐 <b>.glb file</b>
+        web 3D preview
+        data/models/gltf/{job}.glb"])
+    end
+
+    OUT --> UIBOX
 
     subgraph UIBOX["Frontend  ·  React + Three.js"]
         direction LR
@@ -174,6 +190,11 @@ flowchart TB
     end
 
     EP -. "edit + rebuild" .-> MERGE
+
+    classDef output fill:#d4edda,stroke:#28a745,stroke-width:3px,color:#155724
+    class RVT,GLB output
+    classDef algo fill:#fff3cd,stroke:#856404,stroke-width:2px,color:#856404
+    class GRID algo
 ```
 
 ### Stage Summary
@@ -182,7 +203,7 @@ flowchart TB
 |---|-------|-----------|-------|
 | 1 | Security & size check | `SecurePDFRenderer` | Validates magic bytes; 150 MP pixel budget allows 300 DPI up to A0/ANSI-E size |
 | 2 | Source data (parallel I/O) | `VectorProcessor` + `StreamingProcessor` | PDF paths/text spans + 300 DPI raster render, run concurrently |
-| 3 | Parallel detection agents | Grid · Column · Structural Framing · Stairs · Lift · Wall · Slab | All 7 agents run concurrently via `asyncio.gather`; each returns `{bbox, center, confidence}` dicts |
+| 3 | Parallel detection | `GridDetector` (algorithmic) + ML agents: Column · Structural Framing · Stairs · Lift · Wall · Slab | All run concurrently via `asyncio.gather`. `GridDetector` uses PyMuPDF text extraction (no ML) and returns `grid_info` (mm scale + line positions). ML agents return `{bbox, center, confidence}` dicts from YOLO weights |
 | 4 | Detection merger | `HybridFusionPipeline` / `GridDetector` | Fuses agent outputs, snaps to vector geometry, resolves pixel → mm coordinate space |
 | 4c | Intelligence middleware | `resolve_types` / `validate_elements` / `enforce_rules` | cv2 contour type classification; IoU/grid/isolation validation; DfMA bay-spacing rules (SS CP 65); beam-column join-conflict detection; writes debug PNG of rejected beams |
 | 5 | Semantic AI | `SemanticAnalyzer` (Ollama) | `aisingapore/Gemma-SEA-LION-v4-4B-VL` — column annotation, materials, building type inference |
