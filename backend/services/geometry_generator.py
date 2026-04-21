@@ -209,8 +209,10 @@ class GeometryGenerator:
         """
         logger.info("Generating Semantic 3D parameters for Revit (grid-based)…")
 
+        levels = self._build_default_levels(enriched_data)
+
         geometry = {
-            "levels":   self._build_default_levels(enriched_data),
+            "levels":   levels,
             "grids":    self._build_grid_commands(grid_info),
 
             # ── Structural elements ────────────────────────────────────
@@ -219,7 +221,8 @@ class GeometryGenerator:
             "walls":              self._build_wall_parameters(
                                       enriched_data.get("walls", []), grid_info),
             "structural_framing": self._build_structural_framing_parameters(
-                                      enriched_data.get("structural_framing", []), grid_info),
+                                      enriched_data.get("structural_framing", []),
+                                      grid_info, levels),
             "stairs":             self._build_stairs_parameters(
                                       enriched_data.get("stairs", [])),
             "lifts":              self._build_lift_parameters(
@@ -581,17 +584,20 @@ class GeometryGenerator:
     # ------------------------------------------------------------------
 
     def _build_structural_framing_parameters(
-        self, elements: List[Dict], grid_info: Dict
+        self, elements: List[Dict], grid_info: Dict, levels: List[Dict]
     ) -> List[Dict]:
         """Convert detected beam bboxes to Revit StructuralFraming recipe entries.
 
         Beam axis is inferred from the long dimension of the YOLO bbox.
         Cross-section width = short bbox dimension (mm); depth = DEFAULT_BEAM_DEPTH_MM (800 mm).
-        Z is placed at the top of the storey (= default_wall_height) so beams
-        sit flush with the column tops.
+        Beams are placed at Level 1 elevation (= column top) so they sit flush
+        with the column tops. Reference level is set to "Level 1" to match.
         """
         params: List[Dict] = []
-        z_mm = float(self.default_wall_height)  # beams sit at column-top elevation
+        # Use Level 1 elevation (column top) — NOT default_wall_height, which is
+        # a wall/door metric and typically undershoots the storey height by 200mm+.
+        level1 = next((l for l in levels if l["name"] == "Level 1"), None)
+        z_mm   = float(level1["elevation"]) if level1 else float(self.default_wall_height)
 
         for elem in elements:
             # Skip beams that the ValidationAgent flagged as causing Revit join errors
@@ -642,7 +648,7 @@ class GeometryGenerator:
                 "end_point":   end,
                 "width":       round(width_mm, 1),
                 "depth":       round(depth_mm, 1),
-                "level":       "Level 0",
+                "level":       "Level 1",   # beam's reference level = storey it sits on
                 "family_type": f"Beam{int(max_dim)}x{int(min_dim)}mm",
             })
 

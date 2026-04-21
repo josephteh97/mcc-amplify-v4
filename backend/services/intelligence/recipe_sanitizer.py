@@ -6,14 +6,12 @@ the Windows machine.  No AI involved.  All fixes are geometric and rule-based.
 
 Passes (in order):
   1. snap_and_filter_framing — snap beam endpoints to the nearest column's
-                               insertion point; REMOVE any beam whose endpoints
+                               insertion point; REMOVE beams whose endpoints
                                don't both land on a column (would float in the
-                               Revit model) or whose post-snap axis deviates
-                               beyond AXIS_TOLERANCE_MM from X/Y (diagonal
-                               beams between non-colinear columns).
-                               Prevents visible gaps, floating beams, and
-                               tilted beams that aren't perpendicular to the
-                               column axis.
+                               model), whose post-snap axis deviates beyond
+                               AXIS_TOLERANCE_MM from X/Y (diagonal between
+                               non-colinear columns), or whose span collapses
+                               below MIN_BEAM_MM.
   2. clamp_column_min_size   — ensure column width/depth >= COL_MIN_MM (200 mm).
                                Revit auto-deletes families below this threshold.
 
@@ -74,24 +72,24 @@ def _dist2d(x1: float, y1: float, x2: float, y2: float) -> float:
     return math.hypot(x2 - x1, y2 - y1)
 
 
+_ENDPOINT_KEYS = ("start_point", "end_point")
+
+
+def _reject(actions: list[str], index: int, reason: str) -> None:
+    actions.append(f"framing[{index}] removed — {reason}")
+
+
 def _snap_and_filter_framing(
     recipe: dict,
     centers: list[tuple[float, float, float, float]],
 ) -> tuple[dict, list[str]]:
     """
-    Single pass over structural_framing:
-      - Snap each endpoint within (column half-width + _SNAP_BUFFER_MM) to the
-        nearest column centre. Structural beams should span column-to-column;
-        YOLO pixel bboxes rarely land exactly on the Revit insertion point.
-      - REMOVE any beam where either endpoint failed to snap to a column —
-        a floating endpoint creates a visible gap or a beam dangling in
-        mid-air (images 3 and 4 of the common-sense review).
-      - REMOVE any beam whose post-snap axis is diagonal by more than
-        _AXIS_TOLERANCE_MM — this happens when snap pulls the two endpoints
-        to columns that aren't perfectly colinear, producing a tilted beam
-        not perpendicular to the column axis (image 2).
-      - REMOVE any beam whose span drops below _MIN_BEAM_MM after snapping
-        (both endpoints snapped to the same column).
+    Single pass over structural_framing. Snaps each endpoint within
+    (column half-width + _SNAP_BUFFER_MM) to the nearest column centre, then
+    rejects beams that fail any of:
+      - an endpoint didn't snap (floating / visible gap)
+      - post-snap axis is diagonal beyond _AXIS_TOLERANCE_MM (non-colinear columns)
+      - span < _MIN_BEAM_MM (both endpoints snapped to same column)
     """
     framing = recipe.get("structural_framing", [])
     kept:    list[dict] = []
@@ -102,9 +100,9 @@ def _snap_and_filter_framing(
 
     for i, beam in enumerate(framing):
         snap_actions: list[str] = []
-        snapped = {"start_point": False, "end_point": False}
+        snapped: set[str] = set()
 
-        for pt_key in ("start_point", "end_point"):
+        for pt_key in _ENDPOINT_KEYS:
             pt = beam.get(pt_key)
             if not isinstance(pt, dict):
                 continue
@@ -127,40 +125,33 @@ def _snap_and_filter_framing(
                 cx, cy = best_col
                 pt["x"] = cx
                 pt["y"] = cy
-                snapped[pt_key] = True
+                snapped.add(pt_key)
                 snap_actions.append(
                     f"framing[{i}].{pt_key} snapped to column @ "
                     f"({cx:.0f}, {cy:.0f}) mm  [was {best_dist:.0f} mm away]"
                 )
 
-        if not (snapped["start_point"] and snapped["end_point"]):
-            missing = [k for k, v in snapped.items() if not v]
-            actions.append(
-                f"framing[{i}] removed — {', '.join(missing)} not within "
-                f"{_SNAP_BUFFER_MM:.0f} mm of any column (would float in model)"
-            )
+        missing = [k for k in _ENDPOINT_KEYS if k not in snapped]
+        if missing:
+            _reject(actions, i,
+                f"{', '.join(missing)} not within {_SNAP_BUFFER_MM:.0f} mm "
+                f"of any column (would float in model)")
             continue
 
-        sp = beam["start_point"]
-        ep = beam["end_point"]
-        dx = float(ep.get("x", 0.0)) - float(sp.get("x", 0.0))
-        dy = float(ep.get("y", 0.0)) - float(sp.get("y", 0.0))
+        sp, ep = beam["start_point"], beam["end_point"]
+        dx = ep["x"] - sp["x"]   # already floats (set by snap above)
+        dy = ep["y"] - sp["y"]
         length = math.hypot(dx, dy)
 
-        off_axis = min(abs(dx), abs(dy))
-        if off_axis > _AXIS_TOLERANCE_MM:
-            actions.append(
-                f"framing[{i}] removed — diagonal beam after snap "
-                f"(dx={dx:.0f}mm, dy={dy:.0f}mm > tolerance {_AXIS_TOLERANCE_MM:.0f}mm); "
-                f"endpoint columns are not colinear"
-            )
+        if min(abs(dx), abs(dy)) > _AXIS_TOLERANCE_MM:
+            _reject(actions, i,
+                f"diagonal beam after snap (dx={dx:.0f}mm, dy={dy:.0f}mm > "
+                f"tolerance {_AXIS_TOLERANCE_MM:.0f}mm); endpoint columns are not colinear")
             continue
 
         if length < _MIN_BEAM_MM:
-            actions.append(
-                f"framing[{i}] removed — span {length:.0f} mm "
-                f"< minimum {_MIN_BEAM_MM:.0f} mm"
-            )
+            _reject(actions, i,
+                f"span {length:.0f} mm < minimum {_MIN_BEAM_MM:.0f} mm")
             continue
 
         kept.append(beam)

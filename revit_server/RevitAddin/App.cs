@@ -2626,7 +2626,7 @@ namespace RevitModelBuilderAddin
                 }
 
                 // Get or create a properly-sized family type.
-                FamilySymbol symbol = GetOrDuplicateColumnType(doc, baseSymbol, w, d);
+                FamilySymbol symbol = GetOrDuplicateSizedType(doc, baseSymbol, w, d);
                 if (symbol == null)
                 {
                     Log($"Column {col.Id}: type creation failed — falling back to base symbol " +
@@ -3016,10 +3016,16 @@ namespace RevitModelBuilderAddin
         ///   3. If named params fail, fall back to parameter discovery (scan all editable doubles).
         ///   4. Log every step — return null only if the duplicate call itself throws.
         /// </summary>
-        private FamilySymbol GetOrDuplicateColumnType(
+        /// <summary>
+        /// Get or create a FamilySymbol with the given width×depth by duplicating
+        /// the base symbol and setting the section parameters. Used for both
+        /// rectangular columns and rectangular beams — Revit parameter names
+        /// ("b"/"h", "Width"/"Depth") are identical for both.
+        /// </summary>
+        private FamilySymbol GetOrDuplicateSizedType(
             Document doc, FamilySymbol baseSymbol, double wMm, double dMm)
         {
-            // Round to nearest 50 mm so we reuse types across similar-sized columns.
+            // Round to nearest 50 mm so we reuse types across similar-sized sections.
             double w = Math.Round(wMm / 50.0) * 50;
             double d = Math.Round(dMm / 50.0) * 50;
             string typeName = $"{(int)w}x{(int)d}mm";
@@ -3071,7 +3077,7 @@ namespace RevitModelBuilderAddin
             }
             catch (Exception ex)
             {
-                Log($"  [ERROR] GetOrDuplicateColumnType '{typeName}': {ex.Message}");
+                Log($"  [ERROR] GetOrDuplicateSizedType '{typeName}': {ex.Message}");
                 return null;
             }
         }
@@ -3177,7 +3183,7 @@ namespace RevitModelBuilderAddin
             if (framings == null || framings.Count == 0) return;
 
             // Prefer a CJY_-branded concrete beam family; fall back to any StructuralFraming symbol.
-            FamilySymbol beamSym = new FilteredElementCollector(doc)
+            FamilySymbol baseSym = new FilteredElementCollector(doc)
                 .OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
                 .Where(s => s.Category?.Id?.IntegerValue ==
                             (int)BuiltInCategory.OST_StructuralFraming)
@@ -3185,19 +3191,10 @@ namespace RevitModelBuilderAddin
                     StringComparison.OrdinalIgnoreCase))
                 .FirstOrDefault();
 
-            if (beamSym == null)
+            if (baseSym == null)
             {
                 Log("[WARN] No structural framing family found — beams skipped.");
                 return;
-            }
-            if (!beamSym.IsActive)
-            {
-                try { beamSym.Activate(); doc.Regenerate(); }
-                catch (Exception ex)
-                {
-                    Log($"[WARN] Beam symbol activation failed: {ex.Message}");
-                    return;
-                }
             }
 
             int placed = 0, skipped = 0;
@@ -3211,6 +3208,21 @@ namespace RevitModelBuilderAddin
 
                 Level level = GetLevel(doc, beam.Level ?? "Level 0");
                 if (level == null) { skipped++; continue; }
+
+                // Get or create a symbol matching this beam's section dimensions
+                // (same helper used for rectangular columns).
+                FamilySymbol beamSym = GetOrDuplicateSizedType(
+                    doc, baseSym, beam.Width, beam.Depth) ?? baseSym;
+                if (!beamSym.IsActive)
+                {
+                    try { beamSym.Activate(); doc.Regenerate(); }
+                    catch (Exception ex)
+                    {
+                        Log($"[WARN] Beam symbol activation failed: {ex.Message}");
+                        skipped++;
+                        continue;
+                    }
+                }
 
                 try
                 {
