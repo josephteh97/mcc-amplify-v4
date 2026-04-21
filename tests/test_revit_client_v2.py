@@ -19,9 +19,7 @@ from backend.services.revit_client import RevitClient, _parse_warning_header
 class TestParseWarningHeader:
     def test_v1_string_list(self):
         headers = {"x-revit-warnings": '["warn A", "warn B"]'}
-        texts, details = _parse_warning_header(headers)
-        assert texts == ["warn A", "warn B"]
-        assert details == [
+        assert _parse_warning_header(headers) == [
             {"text": "warn A", "element_ids": []},
             {"text": "warn B", "element_ids": []},
         ]
@@ -31,9 +29,9 @@ class TestParseWarningHeader:
             "x-revit-warnings": '["single"]',
             "x-revit-warnings-version": "1",
         }
-        texts, details = _parse_warning_header(headers)
-        assert texts == ["single"]
-        assert details == [{"text": "single", "element_ids": []}]
+        assert _parse_warning_header(headers) == [
+            {"text": "single", "element_ids": []},
+        ]
 
     def test_v2_object_list(self):
         headers = {
@@ -43,9 +41,7 @@ class TestParseWarningHeader:
             ),
             "x-revit-warnings-version": "2",
         }
-        texts, details = _parse_warning_header(headers)
-        assert texts == ["join fail", "off axis"]
-        assert details == [
+        assert _parse_warning_header(headers) == [
             {"text": "join fail", "element_ids": [42, 99]},
             {"text": "off axis", "element_ids": [7]},
         ]
@@ -55,9 +51,9 @@ class TestParseWarningHeader:
             "x-revit-warnings": '[{"text":"no ids here"}]',
             "x-revit-warnings-version": "2",
         }
-        texts, details = _parse_warning_header(headers)
-        assert texts == ["no ids here"]
-        assert details == [{"text": "no ids here", "element_ids": []}]
+        assert _parse_warning_header(headers) == [
+            {"text": "no ids here", "element_ids": []},
+        ]
 
     def test_v2_with_string_element_gracefully_degrades(self):
         # Malformed v2 payload (strings mixed in) — preserve text, empty IDs.
@@ -65,32 +61,22 @@ class TestParseWarningHeader:
             "x-revit-warnings": '["legacy string", {"text":"object","element_ids":[1]}]',
             "x-revit-warnings-version": "2",
         }
-        texts, details = _parse_warning_header(headers)
-        assert texts == ["legacy string", "object"]
+        details = _parse_warning_header(headers)
+        assert [d["text"] for d in details] == ["legacy string", "object"]
         assert details[0]["element_ids"] == []
         assert details[1]["element_ids"] == [1]
 
     def test_empty_header(self):
-        texts, details = _parse_warning_header({"x-revit-warnings": "[]"})
-        assert texts == []
-        assert details == []
+        assert _parse_warning_header({"x-revit-warnings": "[]"}) == []
 
     def test_missing_header(self):
-        texts, details = _parse_warning_header({})
-        assert texts == []
-        assert details == []
+        assert _parse_warning_header({}) == []
 
     def test_malformed_json_returns_empty(self):
-        headers = {"x-revit-warnings": "not-json{"}
-        texts, details = _parse_warning_header(headers)
-        assert texts == []
-        assert details == []
+        assert _parse_warning_header({"x-revit-warnings": "not-json{"}) == []
 
     def test_non_list_payload_returns_empty(self):
-        headers = {"x-revit-warnings": '{"not":"a list"}'}
-        texts, details = _parse_warning_header(headers)
-        assert texts == []
-        assert details == []
+        assert _parse_warning_header({"x-revit-warnings": '{"not":"a list"}'}) == []
 
 
 class TestBuildModelHeaderCapture:

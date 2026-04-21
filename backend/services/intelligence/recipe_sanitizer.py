@@ -38,9 +38,9 @@ def sanitize_recipe(recipe: dict) -> tuple[dict, list[str]]:
 
     actions = a1 + a2
     if actions:
-        logger.info("RecipeSanitizer: %d fix(es) applied before export", len(actions))
+        logger.info("RecipeSanitizer: {} fix(es) applied before export", len(actions))
         for a in actions:
-            logger.debug("  • %s", a)
+            logger.debug("  • {}", a)
     else:
         logger.debug("RecipeSanitizer: recipe clean — no pre-export fixes needed")
 

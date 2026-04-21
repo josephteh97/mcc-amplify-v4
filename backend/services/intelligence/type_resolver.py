@@ -43,7 +43,7 @@ def resolve_types(
             resolved = _classify_crop(crop)
             det.update(resolved)
         except Exception as exc:
-            logger.warning("Type resolution failed for detection: %s", exc)
+            logger.warning("Type resolution failed for detection: {}", exc)
             _set_unknown(det)
     return detections
 

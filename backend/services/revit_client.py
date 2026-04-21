@@ -26,7 +26,14 @@ import json as _json
 import os
 import re
 from pathlib import Path
+from typing import TypedDict
 from loguru import logger
+
+
+class WarningDetail(TypedDict):
+    """A Revit warning plus the element IDs it references (v2 schema)."""
+    text:        str
+    element_ids: list[int]
 
 
 def _rvt_stem(pdf_filename: str, job_id: str) -> str:
@@ -38,15 +45,15 @@ def _rvt_stem(pdf_filename: str, job_id: str) -> str:
     return job_id
 
 
-def _parse_warning_header(headers) -> tuple[list[str], list[dict]]:
+def _parse_warning_header(headers) -> list[WarningDetail]:
     """
-    Decode the X-Revit-Warnings header into (texts, details).
+    Decode the X-Revit-Warnings header into a list of WarningDetail.
 
-    v1 payload is a JSON list of strings.  v2 payload is a JSON list of
-    {"text": str, "element_ids": [int]} objects, advertised via
-    X-Revit-Warnings-Version: 2.  The `texts` list keeps the caller
-    contract identical across versions; `details` gives the Phase 2
-    healing agent access to element IDs when available.
+    v1 payload (default) is a JSON list of strings → element_ids always `[]`.
+    v2 payload, advertised via `X-Revit-Warnings-Version: 2`, is a JSON list of
+    `{"text": str, "element_ids": [int]}` objects.
+
+    Callers that only need the text can do `[d["text"] for d in details]`.
     """
     raw_hdr = headers.get("x-revit-warnings", "[]")
     version = headers.get("x-revit-warnings-version", "1")
@@ -55,10 +62,10 @@ def _parse_warning_header(headers) -> tuple[list[str], list[dict]]:
     except Exception:
         parsed = []
     if not isinstance(parsed, list):
-        return [], []
+        return []
 
     if version == "2":
-        details: list[dict] = []
+        details: list[WarningDetail] = []
         for w in parsed:
             if isinstance(w, dict):
                 details.append({
@@ -68,11 +75,10 @@ def _parse_warning_header(headers) -> tuple[list[str], list[dict]]:
             else:
                 # Defensive: unexpected shape under v2 — preserve text only.
                 details.append({"text": str(w), "element_ids": []})
-        return [d["text"] for d in details], details
+        return details
 
     # v1 — plain string list
-    texts = [str(w) for w in parsed]
-    return texts, [{"text": t, "element_ids": []} for t in texts]
+    return [{"text": str(w), "element_ids": []} for w in parsed]
 
 
 def _print_revit_warnings(job_id: str, warnings: list) -> None:
@@ -112,12 +118,10 @@ class RevitClient:
         self.mode        = os.getenv("REVIT_MODE", "http").lower()  # "http" | "file"
         # Shared directory visible from this Linux host (e.g. /mnt/revit_output)
         self.shared_dir  = Path(os.getenv("REVIT_SHARED_DIR", "/mnt/revit_output"))
-        # v2 warning schema buffer — list of {"text": str, "element_ids": list[int]}.
-        # Populated on every /build-model call so the Phase 2 healing agent can
-        # correlate warning text with the Revit element IDs it references.
-        # Public callers receive the texts-only list for backward compatibility;
-        # the healing agent reads this attribute directly.
-        self.last_warning_details: list[dict] = []
+        # Side-channel for the Phase 2 healing agent: populated on every
+        # /build-model call with the v2 warning schema.  Public `build_model`
+        # callers still receive the texts-only list for backward compatibility.
+        self.last_warning_details: list[WarningDetail] = []
 
     # ------------------------------------------------------------------
     # Health check
@@ -204,16 +208,11 @@ class RevitClient:
                 with open(rvt_path, "wb") as f:
                     f.write(content)
 
-                # Parse Revit build warnings from custom response header.
-                # The C# WarningCollector silently dismisses dialogs and
-                # encodes collected warnings here.
-                #
-                # Schema versions:
-                #   v1 (default) — JSON array of text strings
-                #   v2           — JSON array of {"text": str, "element_ids": [int]}
-                # Version is advertised via the X-Revit-Warnings-Version header;
-                # absent → treat as v1.
-                warnings, details = _parse_warning_header(response.headers)
+                # Decode X-Revit-Warnings (v1 strings or v2 objects — see
+                # _parse_warning_header).  Details are stashed for the healing
+                # agent; legacy callers receive the plain text list.
+                details  = _parse_warning_header(response.headers)
+                warnings = [d["text"] for d in details]
                 self.last_warning_details = details
 
                 _print_revit_warnings(job_id, warnings)

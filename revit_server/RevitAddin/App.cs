@@ -64,7 +64,8 @@
 //
 //   POST /session/{id}/query-elements
 //       body: { "element_ids": [int]?, "category": string? }   // either filter; both optional → all
-//       → { elements: [ { id, category, family, type, bbox: { min, max }, location } ] }
+//       → { elements: [ { id, category, family, type, bbox: { min, max }, location } ],
+//           truncated?: true }   // truncated=true iff an unfiltered/category scan hit QUERY_ELEMENTS_MAX_SCAN
 //         Distances in millimetres.  Used by the self-healing agent's clash resolver.
 //
 // Session lifecycle
@@ -131,16 +132,18 @@ namespace RevitModelBuilderAddin
         private CancellationTokenSource _cts;
 
         // ── Warning capture (batch build) ─────────────────────────────────────
-        // _sessionWarnings holds the warning text for legacy v1 callers.
-        // _sessionWarningDetails holds the same warnings plus the Revit element
-        // IDs they reference, which the Phase 2 self-healing agent uses to
-        // target corrections at specific elements.  Order matches _sessionWarnings.
-        private readonly List<string> _sessionWarnings = new List<string>();
+        // Populated by OnFailuresProcessing for any warning that escapes a
+        // transaction's IFailuresPreprocessor.  Reset at the start of each
+        // /build-model and consumed in HandleBuildModel's merge block.
         private readonly List<(string Text, List<int> ElementIds)> _sessionWarningDetails
             = new List<(string, List<int>)>();
-        private readonly object       _warningsLock    = new object();
+        private readonly object _warningsLock = new object();
 
-        private const int PORT = 5000;
+        private const int    PORT                    = 5000;
+        private const double FEET_TO_MM              = 304.8;
+        // Maximum elements returned from an unfiltered /query-elements scan.
+        // Callers wanting more must pass explicit element_ids.
+        private const int    QUERY_ELEMENTS_MAX_SCAN = 5000;
 
         // ── Startup ────────────────────────────────────────────────────────────
 
@@ -220,7 +223,6 @@ namespace RevitModelBuilderAddin
                                          .Select(id => id.IntegerValue).ToList();
                         lock (_warningsLock)
                         {
-                            _sessionWarnings.Add(text);
                             _sessionWarningDetails.Add((text, elemIds));
                         }
                         Console.WriteLine($"[RevitWarning] {text}");
@@ -229,6 +231,18 @@ namespace RevitModelBuilderAddin
                     if (msg.GetSeverity() == FailureSeverity.Warning)
                     {
                         try { fa.DeleteWarning(msg); anyHandled = true; } catch { }
+                    }
+                    else if (FailureHelpers.IsJoinError(text))
+                    {
+                        // Safety net: a join error slipped past the transaction's
+                        // IFailuresPreprocessor (WarningCollector) and would
+                        // otherwise pop a modal dialog that hangs the build.
+                        var applied = FailureHelpers.TryApplyJoinResolution(fa, msg);
+                        if (applied != null)
+                        {
+                            anyHandled = true;
+                            Console.WriteLine($"[JOIN-RESOLVED-APPLEVEL:{applied}] {text}");
+                        }
                     }
                 }
                 if (anyHandled)
@@ -374,7 +388,6 @@ namespace RevitModelBuilderAddin
 
             lock (_warningsLock)
             {
-                _sessionWarnings.Clear();
                 _sessionWarningDetails.Clear();
             }
 
@@ -409,30 +422,33 @@ namespace RevitModelBuilderAddin
 
             byte[] rvtBytes = File.ReadAllBytes(outputPath);
 
-            // Merge warnings from both capture paths, preserving order and
-            // deduplicating by text.  Session-scope details (from
-            // OnFailuresProcessing) come first, then per-build details from
-            // the WarningCollector.  Element IDs follow text through v2.
-            var seen            = new HashSet<string>();
-            var mergedDetails   = new List<(string Text, List<int> ElementIds)>();
+            // Merge across the two capture paths — OnFailuresProcessing
+            // (session-scope) and WarningCollector (per-build) — since a
+            // warning escaping the preprocessor is also seen by the safety net.
+            // Element IDs from duplicate-text entries are unioned so bulk
+            // failures (e.g. 74 join errors, same text, different IDs) retain
+            // every affected element for the healing agent.
+            var orderedTexts = new List<string>();
+            var idsByText    = new Dictionary<string, HashSet<int>>();
+            void AddEntry(string text, List<int> ids)
+            {
+                if (!idsByText.TryGetValue(text, out var set))
+                {
+                    set = new HashSet<int>();
+                    idsByText[text] = set;
+                    orderedTexts.Add(text);
+                }
+                foreach (var id in ids) set.Add(id);
+            }
             lock (_warningsLock)
             {
-                foreach (var d in _sessionWarningDetails)
-                    if (seen.Add(d.Text)) mergedDetails.Add(d);
+                foreach (var d in _sessionWarningDetails) AddEntry(d.Text, d.ElementIds);
             }
-            foreach (var d in _buildHandler.ResultWarningDetails
-                              ?? new List<(string, List<int>)>())
-                if (seen.Add(d.Text)) mergedDetails.Add(d);
+            foreach (var d in _buildHandler.ResultWarningDetails) AddEntry(d.Text, d.ElementIds);
 
-            // Extra texts with no detail pair (e.g. [JOIN-RESOLVED:*] entries
-            // that are added to Warnings but not to WarningDetails) — attach
-            // empty element_ids so the v2 payload still includes them.
-            foreach (var w in _buildHandler.ResultWarnings ?? new List<string>())
-                if (seen.Add(w)) mergedDetails.Add((w, new List<int>()));
-
-            var warningsV2 = mergedDetails.Select(d => new {
-                text        = d.Text,
-                element_ids = d.ElementIds ?? new List<int>(),
+            var warningsV2 = orderedTexts.Select(text => new {
+                text        = text,
+                element_ids = idsByText[text].OrderBy(i => i).ToList(),
             }).ToList();
 
             string warningsJson = JsonConvert.SerializeObject(warningsV2);
@@ -1303,6 +1319,7 @@ namespace RevitModelBuilderAddin
                 {
                     var doc = state.Document;
                     IEnumerable<Element> elems;
+                    bool unfilteredScan = requestedIds == null;
 
                     if (requestedIds != null)
                     {
@@ -1314,58 +1331,71 @@ namespace RevitModelBuilderAddin
                     {
                         var fec = new FilteredElementCollector(doc).WhereElementIsNotElementType();
                         if (categoryFilter.HasValue) fec = fec.OfCategory(categoryFilter.Value);
-                        elems = fec.ToElements();
+                        elems = fec;   // capped below by scan count, not materialized early
                     }
 
+                    // Cache ElementType lookups: many elements share a type, so
+                    // doc.GetElement(typeId) is redundant for all but the first.
+                    var typeCache = new Dictionary<ElementId, ElementType>();
+                    ElementType LookupType(ElementId tid)
+                    {
+                        if (tid == null || tid == ElementId.InvalidElementId) return null;
+                        if (!typeCache.TryGetValue(tid, out var t))
+                        {
+                            t = doc.GetElement(tid) as ElementType;
+                            typeCache[tid] = t;
+                        }
+                        return t;
+                    }
+
+                    JObject Mm(XYZ p) => new JObject
+                    {
+                        ["x"] = Math.Round(p.X * FEET_TO_MM, 1),
+                        ["y"] = Math.Round(p.Y * FEET_TO_MM, 1),
+                        ["z"] = Math.Round(p.Z * FEET_TO_MM, 1),
+                    };
+
                     var arr = new JArray();
+                    bool truncated = false;
+                    int  scanned   = 0;
                     foreach (var elem in elems)
                     {
+                        // Cap by scan count (not arr.Count) so skipped non-geometric
+                        // elements still consume budget — otherwise a model full of
+                        // detail lines would never hit the ceiling.
+                        if (unfilteredScan && scanned >= QUERY_ELEMENTS_MAX_SCAN)
+                        {
+                            truncated = true;
+                            break;
+                        }
+                        scanned++;
+
                         BoundingBoxXYZ bb;
                         try { bb = elem.get_BoundingBox(null); } catch { bb = null; }
                         if (bb == null) continue;       // skip non-geometric elements
 
-                        var sym       = doc.GetElement(elem.GetTypeId()) as ElementType;
-                        string family = sym?.FamilyName ?? "";
-                        string tname  = sym?.Name       ?? "";
+                        var sym = LookupType(elem.GetTypeId());
 
                         var obj = new JObject
                         {
                             ["id"]       = elem.Id.IntegerValue,
                             ["category"] = elem.Category?.Name ?? "",
-                            ["family"]   = family,
-                            ["type"]     = tname,
-                            ["bbox"] = new JObject
-                            {
-                                ["min"] = new JObject
-                                {
-                                    ["x"] = Math.Round(bb.Min.X * 304.8, 1),
-                                    ["y"] = Math.Round(bb.Min.Y * 304.8, 1),
-                                    ["z"] = Math.Round(bb.Min.Z * 304.8, 1),
-                                },
-                                ["max"] = new JObject
-                                {
-                                    ["x"] = Math.Round(bb.Max.X * 304.8, 1),
-                                    ["y"] = Math.Round(bb.Max.Y * 304.8, 1),
-                                    ["z"] = Math.Round(bb.Max.Z * 304.8, 1),
-                                },
-                            },
+                            ["family"]   = sym?.FamilyName ?? "",
+                            ["type"]     = sym?.Name       ?? "",
+                            ["bbox"]     = new JObject { ["min"] = Mm(bb.Min), ["max"] = Mm(bb.Max) },
                         };
 
                         if (elem.Location is LocationPoint lp)
-                        {
-                            obj["location"] = new JObject
-                            {
-                                ["x"] = Math.Round(lp.Point.X * 304.8, 1),
-                                ["y"] = Math.Round(lp.Point.Y * 304.8, 1),
-                                ["z"] = Math.Round(lp.Point.Z * 304.8, 1),
-                            };
-                        }
+                            obj["location"] = Mm(lp.Point);
 
                         arr.Add(obj);
                     }
 
-                    Log($"Session {sessionId}: query-elements → {arr.Count} element(s)");
-                    return new JObject { ["elements"] = arr };
+                    Log($"Session {sessionId}: query-elements → {arr.Count} element(s)"
+                        + (truncated ? " (truncated)" : ""));
+                    var response = new JObject { ["elements"] = arr };
+                    if (truncated) response["truncated"] = true;
+                    return response;
                 });
 
                 WriteJson(stream, 200, result);
@@ -1744,6 +1774,53 @@ namespace RevitModelBuilderAddin
     }
 
     // =========================================================================
+    // FailureHelpers — shared logic for Revit failure-message resolution.
+    // Used by both the per-transaction WarningCollector and the application-
+    // level OnFailuresProcessing safety net.
+    // =========================================================================
+
+    internal static class FailureHelpers
+    {
+        // Preference order for "Cannot keep elements joined" resolutions.
+        // UnjoinElements matches the "Unjoin Elements" button on Revit's native
+        // dialog and is the canonical fix; SkipElements/DetachElements are
+        // fallbacks for join failures that don't expose UnjoinElements.
+        public static readonly FailureResolutionType[] JoinResolutionLadder =
+        {
+            FailureResolutionType.UnjoinElements,
+            FailureResolutionType.SkipElements,
+            FailureResolutionType.DetachElements,
+        };
+
+        public static bool IsJoinError(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            return text.IndexOf("cannot keep", StringComparison.OrdinalIgnoreCase) >= 0
+                || (text.IndexOf("element",    StringComparison.OrdinalIgnoreCase) >= 0
+                 && text.IndexOf("join",       StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        // Try JoinResolutionLadder in order; returns the type applied, or null
+        // if nothing resolved.
+        public static FailureResolutionType? TryApplyJoinResolution(
+            FailuresAccessor fa, FailureMessageAccessor msg)
+        {
+            foreach (var resType in JoinResolutionLadder)
+            {
+                if (!msg.HasResolutionOfType(resType)) continue;
+                try
+                {
+                    msg.SetCurrentResolutionType(resType);
+                    fa.ResolveFailure(msg);
+                    return resType;
+                }
+                catch { /* try next resolution type */ }
+            }
+            return null;
+        }
+    }
+
+    // =========================================================================
     // WarningCollector — IFailuresPreprocessor (used by both handlers)
     // =========================================================================
 
@@ -1784,42 +1861,23 @@ namespace RevitModelBuilderAddin
                 }
                 else
                 {
-                    // Attempt to resolve known non-fatal structural errors rather than
-                    // letting them block the transaction.
-                    //
-                    // "Cannot keep elements joined" — Revit tries to auto-join adjacent
-                    // structural members (column↔beam) and fails when geometry is complex.
-                    // Resolution: accept the unjoin (elements remain; join is removed).
-                    // This is equivalent to clicking "Unjoin" in Revit's error dialog.
-                    string desc = text.ToLower();
-                    bool isJoinError = desc.Contains("cannot keep") ||
-                                       (desc.Contains("element") && desc.Contains("join"));
+                    // "Cannot keep elements joined" — Revit tries to auto-join
+                    // adjacent structural members (column↔beam) and fails when
+                    // geometry is complex.  Resolution accepts the unjoin
+                    // (elements remain; join is removed) — equivalent to
+                    // clicking "Unjoin" in Revit's error dialog.
+                    FailureResolutionType? applied = FailureHelpers.IsJoinError(text)
+                        ? FailureHelpers.TryApplyJoinResolution(fa, msg)
+                        : null;
 
-                    bool resolved = false;
-                    if (isJoinError)
+                    if (applied != null)
                     {
-                        // Try resolution types in preference order for join errors
-                        foreach (var resType in new FailureResolutionType[]
-                        {
-                            FailureResolutionType.SkipElements,
-                            FailureResolutionType.DetachElements,
-                        })
-                        {
-                            if (!msg.HasResolutionOfType(resType)) continue;
-                            try
-                            {
-                                msg.SetCurrentResolutionType(resType);
-                                fa.ResolveFailure(msg);
-                                Warnings.Add($"[JOIN-RESOLVED:{resType}] {text}");
-                                WriteLog($"[JOIN-RESOLVED:{resType}] {text}{elemStr}");
-                                resolved = true;
-                                break;
-                            }
-                            catch (Exception ex) { WriteLog($"[DEBUG] Resolution {resType} skipped: {ex.Message}"); }
-                        }
+                        string tagged = $"[JOIN-RESOLVED:{applied}] {text}";
+                        Warnings.Add(tagged);
+                        WarningDetails.Add((tagged, elemIds));
+                        WriteLog($"{tagged}{elemStr}");
                     }
-
-                    if (!resolved)
+                    else
                     {
                         Errors.Add(text);
                         ErrorDetails.Add((text, elemIds));
@@ -1864,11 +1922,8 @@ namespace RevitModelBuilderAddin
         private string _transactionJson;
         private string _outputPath;
 
-        public ManualResetEventSlim Done           { get; } = new ManualResetEventSlim(false);
-        public Exception            BuildError     { get; private set; }
-        public List<string>         ResultWarnings { get; private set; } = new List<string>();
-        // Parallel to ResultWarnings; same order.  Empty ElementIds list when the
-        // warning is not tied to specific elements (e.g. an [JOIN-RESOLVED:*] entry).
+        public ManualResetEventSlim Done       { get; } = new ManualResetEventSlim(false);
+        public Exception            BuildError { get; private set; }
         public List<(string Text, List<int> ElementIds)> ResultWarningDetails { get; private set; }
             = new List<(string, List<int>)>();
         public Dictionary<string, List<string>> ResultFamilies { get; private set; }
@@ -1879,7 +1934,6 @@ namespace RevitModelBuilderAddin
             _transactionJson     = transactionJson;
             _outputPath          = outputPath;
             BuildError           = null;
-            ResultWarnings       = new List<string>();
             ResultWarningDetails = new List<(string, List<int>)>();
             ResultFamilies       = new Dictionary<string, List<string>>();
             Done.Reset();
@@ -1896,7 +1950,6 @@ namespace RevitModelBuilderAddin
             {
                 var builder = new ModelBuilder(app.Application);
                 builder.BuildModel(_transactionJson, _outputPath, warningCollector);
-                ResultWarnings       = warningCollector.Warnings;
                 ResultWarningDetails = warningCollector.WarningDetails;
 
                 // Write post-build summary to build log
@@ -1917,7 +1970,6 @@ namespace RevitModelBuilderAddin
             catch (Exception ex)
             {
                 BuildError           = ex;
-                ResultWarnings       = warningCollector.Warnings;
                 ResultWarningDetails = warningCollector.WarningDetails;
                 Console.WriteLine($"[BuildHandler] Error: {ex}");
             }

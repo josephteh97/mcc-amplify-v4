@@ -162,7 +162,8 @@ Response: {
       "bbox":     { "min": {"x": ..., "y": ..., "z": ...}, "max": {...} },    // mm
       "location": { "x": ..., "y": ..., "z": ... }                             // mm
     }
-  ]
+  ],
+  "truncated": true    // present + true only when a category/all scan hit QUERY_ELEMENTS_MAX_SCAN
 }
 ```
 
@@ -171,6 +172,8 @@ Implementation notes:
 - Use `doc.GetElement(id).get_BoundingBox(null)` for bounds; return `null` for elements without geometry.
 - Convert feet → mm at the C# boundary so Python sees consistent units.
 - Filter via `FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_*)` when `element_ids` is omitted.
+- Unfiltered/category scans are capped at `QUERY_ELEMENTS_MAX_SCAN` (5000) elements; response
+  includes `"truncated": true` when hit.  Callers needing a larger set must pass explicit `element_ids`.
 
 Approx 60 lines of C# in App.cs.  Ship with a minimal fixture test (load known .rvt → assert bbox
 shape for one column).  Hard blocker for Phase 3 `clash_resolver.py`.

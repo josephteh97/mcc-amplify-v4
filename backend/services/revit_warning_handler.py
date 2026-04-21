@@ -72,12 +72,12 @@ def handle_warnings(
             unresolved.append(warn)
 
     if applied:
-        logger.info("RevitWarningHandler: %d deterministic fix(es) applied", len(applied))
+        logger.info("RevitWarningHandler: {} deterministic fix(es) applied", len(applied))
         for a in applied:
-            logger.debug("  • %s", a)
+            logger.debug("  • {}", a)
     if unresolved:
         logger.info(
-            "RevitWarningHandler: %d warning(s) unresolved → passed to AI",
+            "RevitWarningHandler: {} warning(s) unresolved → passed to AI",
             len(unresolved),
         )
 
