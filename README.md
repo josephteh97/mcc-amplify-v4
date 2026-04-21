@@ -54,7 +54,7 @@ Both machines must be on the same local network (or VPN). The Ubuntu machine is 
 ```mermaid
 flowchart TB
     PDF(["📄 PDF input"])
-    PDF --> PIPE
+    PDF --> sec
 
     subgraph PIPE["🏗️ Pipeline"]
         direction TB
