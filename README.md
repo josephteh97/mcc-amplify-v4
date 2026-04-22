@@ -127,8 +127,8 @@ flowchart TB
 
         subgraph SANBOX["Stage 6.7 — Pre-Export Sanitizer"]
             SAN["sanitize_recipe()
-            Snap beam endpoints to column centres
-            Reject floating / diagonal / &lt; 500 mm beams
+            Snap beam endpoints to column centres, then trim to column faces
+            Reject floating / same-column / diagonal / post-trim &lt; 500 mm beams
             Clamp column size ≥ 200 mm (Revit extrusion floor)"]
         end
 
@@ -189,7 +189,7 @@ flowchart TB
 | 5 | Semantic AI | `SemanticAnalyzer` (Ollama) | `aisingapore/Gemma-SEA-LION-v4-4B-VL` — column annotation, materials, building type inference |
 | 6 | Geometry generation | `GeometryGenerator` | `_px_to_world` → `_snap_to_nearest_grid` → Revit recipe; beams placed at Level 1 elevation (flush with column tops); skips admittance-rejected elements; reads `admittance_metadata.material` to emit `RCBeam…` / `SteelBeam…` family names |
 | 6.5 | BIM enrichment + dedup | `BIMTranslatorEnricher` | Merges intelligence metadata; deduplicates elements at same grid intersection (rounds to 0.1 mm) |
-| 6.7 | Pre-export sanitizer | `sanitize_recipe` | Snaps beam endpoints to nearest column centre; rejects floating / diagonal / sub-500 mm beams; clamps column size ≥ 200 mm (Revit extrusion floor) |
+| 6.7 | Pre-export sanitizer | `sanitize_recipe` | Snaps beam endpoints to nearest column centre, then trims each endpoint inward by the column's half-dimension so the beam body stops at the column face (no clash into column body); rejects floating / same-column / diagonal / post-trim sub-500 mm beams; clamps column size ≥ 200 mm (Revit extrusion floor) |
 | 7a | RVT export | `RvtExporter` + Revit Add-in | Sends recipe to Windows Revit; per-size `FamilySymbol` duplication via `GetOrDuplicateSizedType`; AI correction loop (max 3 rounds) on warnings; `WarningCollector` auto-resolves join errors |
 | 7b | glTF export | `GltfExporter` | Writes `.glb` (Z-up → Y-up); columns extrude to their `top_level` elevation so beams sit flush; renders columns, framing, walls, slabs |
 
