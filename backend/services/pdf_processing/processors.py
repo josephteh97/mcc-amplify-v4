@@ -37,12 +37,16 @@ class VectorProcessor:
             vector_data: Dict[str, Any] = {"paths": [], "text": []}
 
             for path in paths:
+                # `dashes` carries the PDF dash pattern (e.g. "[3] 0" = dashed,
+                # "[]" or None = solid). Admittance layer uses it to distinguish
+                # steel (dashed) from RC (solid) framing.
                 vector_data["paths"].append({
-                    "type":  path.get("type", ""),
-                    "items": path.get("items", []),
-                    "color": path.get("color"),
-                    "width": path.get("width", 0),
-                    "rect":  path.get("rect"),
+                    "type":   path.get("type", ""),
+                    "items":  path.get("items", []),
+                    "color":  path.get("color"),
+                    "width":  path.get("width", 0),
+                    "rect":   path.get("rect"),
+                    "dashes": path.get("dashes"),
                 })
 
             for block in page.get_text("dict")["blocks"]:

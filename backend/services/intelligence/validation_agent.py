@@ -1,14 +1,14 @@
 """
-Validation Agent Middleware — DfMA rule enforcement, orphan and join-conflict detection.
+Validation Agent Middleware — DfMA bay-spacing + orphan detection.
 
-Applies Singapore SS CP 65 structural rules to validated detections:
+Applies grid-level Singapore SS CP 65 rules that don't vary per element:
   - Minimum column spacing (min_bay_mm default: 3000 mm)
   - Maximum column spacing (max_bay_mm default: 12000 mm)
-  - Grid alignment enforcement (columns at known grid intersections)
-  - Orphan element detection (columns flagged off_grid + isolated)
-  - Beam–column proximity: a beam whose centre lies within one beam-width
-    of a column centre will cause a Revit "Cannot keep elements joined" error
-    at transaction commit → flagged as beam_column_join_conflict
+  - Orphan element detection (off_grid + isolated)
+
+Per-element admit/reject judgment (including beam-column join conflicts,
+off-grid column deletion, material tagging) now lives in
+backend/services/intelligence/admittance/. See VALIDATION_AGENT.skill.md.
 
 Element type vocabulary (aligns with Revit Structure panel):
   "column"            → Structural Column
@@ -24,7 +24,6 @@ Adds to each detection dict:
 Does NOT remove elements. Does NOT modify coordinates.
 """
 from __future__ import annotations
-import math
 
 from loguru import logger
 
@@ -32,9 +31,6 @@ from backend.services.intelligence.cross_element_validator import OFF_GRID, ISOL
 
 _MIN_BAY_MM = 3000.0
 _MAX_BAY_MM = 12000.0
-# A beam whose centre is within this multiple of its own short-axis width from a column
-# centre will produce a Revit geometry-join error at transaction commit.
-_BEAM_COLUMN_JOIN_CLEARANCE_FACTOR = 1.5
 
 
 def enforce_rules(
@@ -55,8 +51,6 @@ def enforce_rules(
 
     if grid_info is not None:
         _check_bay_spacing(detections, grid_info, min_bay_mm, max_bay_mm)
-
-    _check_beam_column_proximity(detections)
 
     for det in detections:
         det["is_dfma_compliant"] = len(det["dfma_violations"]) == 0
@@ -96,52 +90,3 @@ def _check_bay_spacing(
     if violations:
         for det in detections:
             det["dfma_violations"].extend(violations)
-
-
-def _check_beam_column_proximity(detections: list[dict]) -> None:
-    """
-    Flag structural_framing elements whose centre is too close to a column centre.
-
-    When a beam and a column overlap significantly in plan, Revit's auto-join
-    algorithm fails with "Cannot keep elements joined" (37 unignorable errors).
-    A beam whose centre is within CLEARANCE_FACTOR × beam_short_dim of any
-    column centre is flagged as beam_column_join_conflict so the geometry
-    generator can omit it rather than send it to Revit.
-
-    Uses pixel-space centres (not yet converted to mm) because this check
-    runs before geometry generation.
-    """
-    columns  = [d for d in detections if d.get("type") == "column"]
-    framings = [d for d in detections if d.get("type") == "structural_framing"]
-
-    if not columns or not framings:
-        return
-
-    for beam in framings:
-        bc = beam.get("center", [0.0, 0.0])
-        bbox = beam.get("bbox", [0.0, 0.0, 0.0, 0.0])
-        if len(bbox) < 4:
-            continue
-
-        # Short-axis dimension in pixels — proxy for clearance zone
-        short_dim = min(abs(bbox[2] - bbox[0]), abs(bbox[3] - bbox[1]))
-        clearance = short_dim * _BEAM_COLUMN_JOIN_CLEARANCE_FACTOR
-
-        for col in columns:
-            cc = col.get("center", [0.0, 0.0])
-            dist = math.hypot(bc[0] - cc[0], bc[1] - cc[1])
-            if dist < clearance:
-                beam["dfma_violations"].append("beam_column_join_conflict")
-                # conflict_column_center is read by debug_overlay to draw a line
-                # back to the offender; without it the renderer can't indicate which.
-                beam["conflict_column_center"] = list(cc)
-                logger.warning(
-                    "Framing {} @ px({:.0f},{:.0f}) bbox={} conflicts with "
-                    "column {} @ px({:.0f},{:.0f}) — dist {:.1f}px < clearance "
-                    "{:.1f}px → excluded (would cause Revit join error)",
-                    beam.get("id", "?"), bc[0], bc[1],
-                    [f"{v:.0f}" for v in bbox],
-                    col.get("id", "?"), cc[0], cc[1],
-                    dist, clearance,
-                )
-                break   # one conflict is enough to flag the beam

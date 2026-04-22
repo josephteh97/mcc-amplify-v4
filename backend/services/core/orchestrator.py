@@ -54,9 +54,12 @@ from backend.services.detection_agents import (
 
 # ── Intelligence layer ────────────────────────────────────────────────────────
 from backend.services.intelligence.type_resolver import resolve_types
-from backend.services.intelligence.cross_element_validator import validate_elements, OFF_GRID
+from backend.services.intelligence.cross_element_validator import validate_elements
 from backend.services.intelligence.validation_agent import enforce_rules
 from backend.services.intelligence.debug_overlay import save_join_conflict_overlay
+from backend.services.intelligence.admittance import judge as admittance_judge
+from backend.services.intelligence.admittance import ElementContext, REJECT
+from backend.services.intelligence.admittance.legend_parser import parse_legend, enrich_with_vision
 from backend.services.intelligence.bim_translator_enricher import enrich_recipe
 from backend.services.intelligence.recipe_sanitizer import sanitize_recipe
 from backend.services.revit_warning_handler import handle_warnings as handle_revit_warnings
@@ -283,10 +286,9 @@ class PipelineOrchestrator:
                     isolation_radius_px=float(os.getenv("ISOLATION_RADIUS_PX", "200")),
                 )
 
-            # Always run enforce_rules on both columns + framing together so:
-            # 1. dfma_violations is always initialized (required by geometry_generator)
-            # 2. beam-column proximity check has full context even if column_raw is empty
-            # enforce_rules mutates dicts in-place — no need to re-split after the call.
+            # ── DfMA bay-spacing checks (still handled by legacy agent) ─────
+            # Admittance layer does per-element judgment; grid-level DfMA
+            # rules (bay min/max) remain on enforce_rules.
             all_dets = _column_dets + framing_raw
             enforce_rules(
                 all_dets,
@@ -295,38 +297,39 @@ class PipelineOrchestrator:
                 max_bay_mm=float(os.getenv("MAX_BAY_MM", "12000")),
             )
 
+            # ── Admittance framework: per-element triage ──────────────────────
+            legend_map = parse_legend(vector_data)
+            legend_map = enrich_with_vision(legend_map, raster, self.semantic_ai)
+            page_rect = vector_data.get("page_rect", [0, 0, 0, 0])
+            ctx = ElementContext(
+                vector_data=vector_data,
+                grid_info=grid_info,
+                legend_map=legend_map,
+                raster=raster,
+                page_width_pt=page_rect[2] - page_rect[0],
+                page_height_pt=page_rect[3] - page_rect[1],
+                dpi=float(image_data.get("dpi", safe_dpi)),
+            )
+            admittance_judge(all_dets, ctx)
+
             if raster is not None:
                 save_join_conflict_overlay(
                     raster, all_dets, f"data/debug/{job_id}_join_conflicts.png",
                 )
 
-            # ── Off-grid column deletion (Validation Agent enforcement) ─────
-            # A column whose pixel centre is farther than max_grid_dist_px from
-            # every grid line is almost certainly a YOLO false positive.  User
-            # directive: "Place wrongly is worse than missing one column."
-            # We delete rather than flag.  The dict identity is shared between
-            # _column_dets and refined_detections (resolve_types mutates in
-            # place), so the off_grid flag is already visible on both.
-            if _column_dets:
-                before = len(refined_detections)
-                refined_detections = [
-                    d for d in refined_detections
-                    if not (
-                        d.get("type") == "column"
-                        and OFF_GRID in d.get("validation_flags", [])
-                    )
-                ]
-                _column_dets = [
-                    d for d in _column_dets
-                    if OFF_GRID not in d.get("validation_flags", [])
-                ]
-                deleted = before - len(refined_detections)
-                if deleted:
-                    logger.warning(
-                        f"🗑️  Deleted {deleted} off-grid column(s) — "
-                        "Validation Agent rejected (columns cannot be outside the grid)."
-                    )
-                    emit(observer.warn(job_id, "off_grid_columns_deleted", {"count": deleted}))
+            rejected_ids = {
+                id(d) for d in all_dets
+                if (d.get("admittance_decision") or {}).get("action") == REJECT
+            }
+            before = len(refined_detections)
+            refined_detections = [d for d in refined_detections if id(d) not in rejected_ids]
+            _column_dets = [d for d in _column_dets if id(d) not in rejected_ids]
+            deleted = before - len(refined_detections)
+            if deleted:
+                logger.warning(
+                    f"🗑️  Admittance rejected {deleted} element(s) — see admittance_decision on each."
+                )
+                emit(observer.warn(job_id, "admittance_rejections", {"count": deleted}))
             emit(observer.stage_completed(job_id, 6, {
                 "column_dets_kept": len(_column_dets),
                 "dfma_violations": sum(1 for d in _column_dets if not d.get("is_dfma_compliant", True)),

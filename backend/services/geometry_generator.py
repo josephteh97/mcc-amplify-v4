@@ -24,6 +24,7 @@ from typing import Dict, List, Tuple, Optional
 from loguru import logger
 
 from backend.services.grid_detector import GridDetector
+from backend.services.intelligence.admittance import REJECT
 
 
 # Default floor-to-floor height when no storey height annotation is present.
@@ -606,12 +607,10 @@ class GeometryGenerator:
         z_mm = level1_elev
 
         for elem in elements:
-            # Skip beams that the ValidationAgent flagged as causing Revit join errors
-            if "beam_column_join_conflict" in elem.get("dfma_violations", []):
-                logger.debug(
-                    "Framing id={} excluded — beam_column_join_conflict",
-                    elem.get("id", "?"),
-                )
+            # Admittance layer may have rejected this element; orchestrator
+            # usually filters those, but guard here too.
+            decision = elem.get("admittance_decision") or {}
+            if decision.get("action") == REJECT:
                 continue
             bbox = elem.get("bbox")
             if not bbox or len(bbox) < 4:
@@ -648,15 +647,20 @@ class GeometryGenerator:
             max_dim   = max(width_mm, depth_mm)
             min_dim   = min(width_mm, depth_mm)
 
-            params.append({
+            material = (elem.get("admittance_metadata") or {}).get("material")
+            family_prefix = {"rc": "RCBeam", "steel": "SteelBeam"}.get(material, "Beam")
+            entry = {
                 "id":          elem.get("id"),
                 "start_point": start,
                 "end_point":   end,
                 "width":       round(width_mm, 1),
                 "depth":       round(depth_mm, 1),
                 "level":       "Level 1",   # beam's reference level = storey it sits on
-                "family_type": f"Beam{int(max_dim)}x{int(min_dim)}mm",
-            })
+                "family_type": f"{family_prefix}{int(max_dim)}x{int(min_dim)}mm",
+            }
+            if material:
+                entry["material"] = material
+            params.append(entry)
 
         return params
 
