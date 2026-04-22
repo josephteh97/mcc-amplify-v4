@@ -3239,16 +3239,8 @@ namespace RevitModelBuilderAddin
                     FamilyInstance inst = doc.Create.NewFamilyInstance(
                         line, beamSym, level, StructuralType.Beam);
 
-                    // Revit's structural framing has START_EXTENSION / END_EXTENSION
-                    // instance parameters that extend the beam body BEYOND the line
-                    // endpoints. The recipe sanitizer already trimmed the line to
-                    // the column faces, so any non-zero default extension would
-                    // push the body back into the column. Force both to 0.
                     if (inst != null)
-                    {
-                        TrySetParamFeet(inst, BuiltInParameter.START_EXTENSION, 0.0);
-                        TrySetParamFeet(inst, BuiltInParameter.END_EXTENSION,   0.0);
-                    }
+                        ApplyRCFramingPlacementDefaults(inst);
                     placed++;
                 }
                 catch (Exception ex)
@@ -3258,6 +3250,28 @@ namespace RevitModelBuilderAddin
                 }
             }
             Log($"Beams: {placed} placed, {skipped} skipped.");
+        }
+
+        /// <summary>
+        /// Canonical placement rules for RC structural framing instances. Every
+        /// RC beam/joist/brace placed by this add-in must go through here so the
+        /// touch-not-overlap + top-at-level conventions stay consistent (future
+        /// RC element creators should call this same method after NewFamilyInstance).
+        ///
+        /// Rules:
+        ///   1. START_EXTENSION / END_EXTENSION = 0 — the recipe sanitizer
+        ///      already trimmed the centerline to column faces; any non-zero
+        ///      extension would push the body back into the column.
+        ///   2. Z_JUSTIFICATION = Top (0) — structural drawings show beams as
+        ///      dashed lines *below* the level line; aligning the beam top with
+        ///      the insertion curve makes the body hang below Level 1 by the
+        ///      beam's own depth, matching that convention.
+        /// </summary>
+        private static void ApplyRCFramingPlacementDefaults(FamilyInstance inst)
+        {
+            TrySetParamFeet(inst, BuiltInParameter.START_EXTENSION, 0.0);
+            TrySetParamFeet(inst, BuiltInParameter.END_EXTENSION,   0.0);
+            TrySetParamInt (inst, BuiltInParameter.Z_JUSTIFICATION, 0);   // 0 = Top
         }
 
         /// <summary>
@@ -3271,6 +3285,21 @@ namespace RevitModelBuilderAddin
                 var p = el.get_Parameter(bip);
                 if (p != null && !p.IsReadOnly && p.StorageType == StorageType.Double)
                     p.Set(valueFeet);
+            }
+            catch { /* parameter not available on this family — ignore */ }
+        }
+
+        /// <summary>
+        /// Safely set an integer built-in parameter on an element.
+        /// No-op if the parameter is missing, read-only, or the set call throws.
+        /// </summary>
+        private static void TrySetParamInt(Element el, BuiltInParameter bip, int value)
+        {
+            try
+            {
+                var p = el.get_Parameter(bip);
+                if (p != null && !p.IsReadOnly && p.StorageType == StorageType.Integer)
+                    p.Set(value);
             }
             catch { /* parameter not available on this family — ignore */ }
         }

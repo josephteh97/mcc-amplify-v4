@@ -137,7 +137,9 @@ flowchart TB
             subgraph RVTBOX["Stage 7a — RVT Export  (Linux → Windows)"]
                 direction TB
                 EXP["RevitClient · HTTP POST → :5000
+                LoadStructuralFramingFamily → CJY_RC Structural Framing
                 GetOrDuplicateSizedType: per-size FamilySymbol
+                ApplyRCFramingPlacementDefaults: 0 extensions + Z-justify Top
                 WarningCollector auto-resolves join errors"]
                 EXP --> WRN{"Revit warnings?"}
                 WRN -->|"yes · attempt ≤ 3"| FIX["SemanticAnalyzer
@@ -190,7 +192,7 @@ flowchart TB
 | 6 | Geometry generation | `GeometryGenerator` | `_px_to_world` → `_snap_to_nearest_grid` → Revit recipe; beams placed at Level 1 elevation (flush with column tops); skips admittance-rejected elements; reads `admittance_metadata.material` to emit `RCBeam…` / `SteelBeam…` family names |
 | 6.5 | BIM enrichment + dedup | `BIMTranslatorEnricher` | Merges intelligence metadata; deduplicates elements at same grid intersection (rounds to 0.1 mm) |
 | 6.7 | Pre-export sanitizer | `sanitize_recipe` | Snaps beam endpoints to nearest column centre, then trims each endpoint inward by the column's half-dimension so the beam body stops at the column face (no clash into column body); rejects floating / same-column / diagonal / post-trim sub-500 mm beams; clamps column size ≥ 200 mm (Revit extrusion floor) |
-| 7a | RVT export | `RvtExporter` + Revit Add-in | Sends recipe to Windows Revit; per-size `FamilySymbol` duplication via `GetOrDuplicateSizedType`; AI correction loop (max 3 rounds) on warnings; `WarningCollector` auto-resolves join errors |
+| 7a | RVT export | `RvtExporter` + Revit Add-in | Sends recipe to Windows Revit; `LoadStructuralFramingFamily` defaults beams to **CJY_RC Structural Framing** (800×800 mm) — steel is only used if admittance-tagged; per-size `FamilySymbol` duplication via `GetOrDuplicateSizedType`; `ApplyRCFramingPlacementDefaults` zeroes `START/END_EXTENSION` (so the body ends at the column face, not beyond it) and sets `Z_JUSTIFICATION = Top` (so the beam hangs below Level 1, matching the dashed-line drawing convention); AI correction loop (max 3 rounds) on warnings; `WarningCollector` auto-resolves join errors |
 | 7b | glTF export | `GltfExporter` | Writes `.glb` (Z-up → Y-up); columns extrude to their `top_level` elevation so beams sit flush; renders columns, framing, walls, slabs |
 
 ---
