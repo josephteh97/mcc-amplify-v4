@@ -36,6 +36,10 @@ from backend.services.intelligence.admittance.signals import (
 _JOIN_CLEARANCE_FACTOR = 1.5          # same trigger as the legacy rule
 _TAG_SEARCH_RADIUS_PX  = 120.0
 _GRID_ALIGN_TOL_PX     = 30.0
+# Snap reach cap: a beam can stretch at most this multiple of its original
+# long-axis length to reach a column. Prevents a short YOLO detection from
+# snapping to a column in the next-next bay.
+_SNAP_MAX_GROWTH = 3.0
 
 
 def judge(det: dict, siblings: list[dict], ctx: ElementContext) -> Decision:
@@ -63,10 +67,22 @@ def judge(det: dict, siblings: list[dict], ctx: ElementContext) -> Decision:
     if tag:
         md["tag"] = tag
 
+    aligned, axis = beam_axis_alignment(bbox_t, ctx.grid_info, tolerance_px=_GRID_ALIGN_TOL_PX)
+
+    # Always attempt to snap endpoints to columns — closes the gap-to-column
+    # that Revit would otherwise show as a floating beam. _snap_bbox_to_columns
+    # is gated by the perpendicular band filter (no cross-gridline snaps) plus
+    # _SNAP_MAX_GROWTH (no absurd extensions).
+    snap_axis = axis or _infer_axis(bbox_t)
+    snapped = _snap_bbox_to_columns(bbox_t, siblings, snap_axis)
+    snapped_changed = snapped != bbox_t
+
     if not in_conflict:
+        if snapped_changed:
+            return admit_with_fix("snap_to_columns", bbox_override=snapped,
+                                  metadata=md, stroke=stroke, tag=tag, material=material)
         return admit("no_conflict", metadata=md, stroke=stroke, tag=tag, material=material)
 
-    aligned, axis = beam_axis_alignment(bbox_t, ctx.grid_info, tolerance_px=_GRID_ALIGN_TOL_PX)
     score = _score(tag, material, aligned, stroke, col_dist, short_dim, ctx.legend_map)
 
     signals = dict(
@@ -80,8 +96,7 @@ def judge(det: dict, siblings: list[dict], ctx: ElementContext) -> Decision:
     md["conflict_column_center"] = list(col.get("center", [])) if col else None
 
     if score >= 3:
-        patched = _snap_bbox_to_columns(bbox_t, siblings, axis or _infer_axis(bbox_t))
-        return admit_with_fix("join_conflict_resolved", bbox_override=patched,
+        return admit_with_fix("join_conflict_resolved", bbox_override=snapped,
                               metadata=md, **signals)
     if score == 2:
         return admit("join_conflict_borderline_admitted", metadata=md, **signals)
@@ -147,6 +162,10 @@ def _snap_bbox_to_columns(
     new_lo = max(cb[1] for cb in befores) if befores else bbox[along_lo]
     new_hi = min(cb[0] for cb in afters)  if afters  else bbox[along_hi]
     if new_hi - new_lo < beam_across:       # sanity check — abandon if degenerate
+        return bbox
+
+    orig_len = bbox[along_hi] - bbox[along_lo]
+    if orig_len > 0 and (new_hi - new_lo) > orig_len * _SNAP_MAX_GROWTH:
         return bbox
 
     patched = list(bbox)

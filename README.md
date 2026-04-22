@@ -32,8 +32,8 @@ Ubuntu (Linux) Machine                      Windows Machine
 |  |   Lift · Slab                    |  |  |  |                            |  |
 |  |  Detection Merger (grid align)   |  |  |  |  WarningCollector          |  |
 |  |  Intelligence (TypeResolver →    |--+--+->|  auto-resolves join errors |  |
-|  |   CrossElemValidator →           |  |  |  |  Returns .RVT binary       |  |
-|  |   ValidationAgent DfMA+JoinCk)   |  |  |  +----------------------------+  |
+|  |   CrossElemValidator → DfMA →    |  |  |  |  Returns .RVT binary       |  |
+|  |   Admittance Agent)              |  |  |  +----------------------------+  |
 |  |  Semantic AI (Ollama SEA-LION)   |  |  |                                  |
 |  |  Geometry Generation             |  |  +----------------------------------+
 |  |  BIM Enricher + Dedup            |  |
@@ -101,11 +101,11 @@ flowchart TB
             cv2 contour → circular / rectangular / L-shape"]
             INT --> CEV["CrossElementValidator
             IoU overlap · grid distance · isolation"]
-            CEV --> VAL["ValidationAgent
-            DfMA SS CP 65 · bay spacing
-            beam-column join-conflict detection"]
-            VAL --> DBG(["🖼️ debug PNG
-            data/debug/{job}_join_conflicts.png"])
+            CEV --> DFMA["DfMA Rules
+            SS CP 65 bay spacing"]
+            DFMA --> ADM["Admittance Agent
+            score signals (dashline · legend tag ·
+            grid align · proximity) → admit / fix / reject"]
         end
 
         subgraph SEMBOX["Stage 5 — Semantic AI  (Ollama)"]
@@ -117,7 +117,7 @@ flowchart TB
         GEO["Stage 6 — Geometry Generation
         _px_to_world · _snap_to_nearest_grid
         Beam Z = Level 1 elevation (flush with column tops)
-        Join-conflict framing excluded from recipe"]
+        Admittance-rejected elements skipped; material tag → family name"]
 
         subgraph BTEBOX["Stage 6.5 — BIM Enrichment + Dedup"]
             BTE["BIMTranslatorEnricher
@@ -185,9 +185,9 @@ flowchart TB
 | 2 | Source data (parallel I/O) | `VectorProcessor` + `StreamingProcessor` | PDF paths/text spans + 300 DPI raster render, run concurrently |
 | 3 | Parallel detection | `GridDetector` (algorithmic) + ML agents: Column · Structural Framing · Stairs · Lift · Wall · Slab | All run concurrently via `asyncio.gather`. `GridDetector` uses PyMuPDF text extraction (no ML) and returns `grid_info` (mm scale + line positions). ML agents return `{bbox, center, confidence}` dicts from YOLO weights |
 | 4 | Detection merger | `HybridFusionPipeline` / `GridDetector` | Fuses agent outputs, snaps to vector geometry, resolves pixel → mm coordinate space |
-| 4c | Intelligence middleware | `resolve_types` / `validate_elements` / `enforce_rules` | cv2 contour type classification; IoU/grid/isolation validation; DfMA bay-spacing rules (SS CP 65); beam-column join-conflict detection; writes debug PNG of rejected beams |
+| 4c | Intelligence middleware | `resolve_types` / `validate_elements` / `enforce_rules` / `admittance.judge` | cv2 contour type classification; IoU/grid/isolation validation; DfMA bay-spacing rules (SS CP 65); **Admittance Agent** scores per-element signals (dashline → RC/steel, legend tag, grid alignment, column proximity) into admit / admit-with-fix (snap beam end to column face) / reject — see `intelligence/VALIDATION_AGENT.skill.md`. Writes decision overlay to `data/debug/{job}_join_conflicts.png` |
 | 5 | Semantic AI | `SemanticAnalyzer` (Ollama) | `aisingapore/Gemma-SEA-LION-v4-4B-VL` — column annotation, materials, building type inference |
-| 6 | Geometry generation | `GeometryGenerator` | `_px_to_world` → `_snap_to_nearest_grid` → Revit recipe; beams placed at Level 1 elevation (flush with column tops); excludes beams flagged `beam_column_join_conflict` |
+| 6 | Geometry generation | `GeometryGenerator` | `_px_to_world` → `_snap_to_nearest_grid` → Revit recipe; beams placed at Level 1 elevation (flush with column tops); skips admittance-rejected elements; reads `admittance_metadata.material` to emit `RCBeam…` / `SteelBeam…` family names |
 | 6.5 | BIM enrichment + dedup | `BIMTranslatorEnricher` | Merges intelligence metadata; deduplicates elements at same grid intersection (rounds to 0.1 mm) |
 | 6.7 | Pre-export sanitizer | `sanitize_recipe` | Snaps beam endpoints to nearest column centre; rejects floating / diagonal / sub-500 mm beams; clamps column size ≥ 200 mm (Revit extrusion floor) |
 | 7a | RVT export | `RvtExporter` + Revit Add-in | Sends recipe to Windows Revit; per-size `FamilySymbol` duplication via `GetOrDuplicateSizedType`; AI correction loop (max 3 rounds) on warnings; `WarningCollector` auto-resolves join errors |

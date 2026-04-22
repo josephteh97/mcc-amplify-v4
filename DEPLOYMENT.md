@@ -31,7 +31,7 @@ flowchart LR
         SRC["Source Data (parallel)\nVectorProcessor + StreamingProcessor"]
         AGENTS["7 Parallel Detection Agents\nGrid · Column · Framing · Stairs · Lift · Wall · Slab"]
         MERGE["Detection Merger\nHybridFusionPipeline + grid pixel alignment"]
-        INT["Intelligence Middleware\nTypeResolver → CrossElementValidator → ValidationAgent\nDfMA SS CP 65 · beam-column join-conflict"]
+        INT["Intelligence Middleware\nTypeResolver → CrossElementValidator → DfMA → Admittance Agent\nscore signals → admit / fix / reject"]
         SEM["Semantic AI (Ollama)\naisingapore/Gemma-SEA-LION-v4-4B-VL"]
         GEO["Geometry Generator\n_px_to_world → _snap_to_nearest_grid"]
         BTE["BIM Enricher + Dedup\n(0.1 mm grid rounding)"]
@@ -80,7 +80,7 @@ flowchart TD
     end
 
     AGENTS --> MERGE["Stage 4: Detection Merger\nHybridFusionPipeline + grid pixel alignment"]
-    MERGE --> INT["Stage 4c: Intelligence Middleware\nTypeResolver → CrossElementValidator → ValidationAgent\nDfMA SS CP 65 · beam-column join-conflict detection"]
+    MERGE --> INT["Stage 4c: Intelligence Middleware\nTypeResolver → CrossElementValidator → DfMA → Admittance Agent\nscore signals → admit / fix / reject"]
     INT --> SEM["Stage 5: Semantic AI (Ollama)\naisingapore/Gemma-SEA-LION-v4-4B-VL\ncolumn annotation · materials"]
     SEM --> GEO["Stage 6: Geometry Generation\npx → world mm → Revit recipe\nJoin-conflict framing excluded"]
     GEO --> BTE["Stage 6.5: BIM Enrichment + Dedup\nAppend intelligence metadata\n0.1 mm grid dedup"]
@@ -381,7 +381,7 @@ sequenceDiagram
     Note right of Backend: Grid · Column · Framing · Wall · Stairs · Lift · Slab
     Backend->>Backend: Stage 4: Detection merger (HybridFusionPipeline, grid alignment)
     Backend->>Backend: Stage 4c: Intelligence middleware
-    Note right of Backend: TypeResolver → CrossElementValidator → ValidationAgent<br/>DfMA SS CP 65 · beam-column join-conflict
+    Note right of Backend: TypeResolver → CrossElementValidator → DfMA → Admittance Agent<br/>score signals → admit / fix / reject
     Backend->>Backend: Stage 5: Semantic AI (Ollama SEA-LION)
     Backend->>Backend: Stage 6: Geometry generation (px → world mm)
     Backend->>Backend: Stage 6.5: BIM enrichment + dedup
