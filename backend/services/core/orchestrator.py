@@ -326,8 +326,17 @@ class PipelineOrchestrator:
             _column_dets = [d for d in _column_dets if id(d) not in rejected_ids]
             deleted = before - len(refined_detections)
             if deleted:
+                rejected = [d for d in all_dets if id(d) in rejected_ids]
+                lines = []
+                for d in rejected:
+                    dec = d.get("admittance_decision") or {}
+                    c = d.get("center") or []
+                    cxy = f"({c[0]:.0f},{c[1]:.0f})" if len(c) >= 2 else "?"
+                    lines.append(
+                        f"   • {d.get('type','?')} id={d.get('id','?')} @{cxy} — {dec.get('reason','?')}"
+                    )
                 logger.warning(
-                    f"🗑️  Admittance rejected {deleted} element(s) — see admittance_decision on each."
+                    "🗑️  Admittance rejected {} element(s):\n{}", deleted, "\n".join(lines)
                 )
                 emit(observer.warn(job_id, "admittance_rejections", {"count": deleted}))
             emit(observer.stage_completed(job_id, 6, {

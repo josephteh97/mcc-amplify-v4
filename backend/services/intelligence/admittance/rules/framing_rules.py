@@ -157,10 +157,16 @@ def _snap_bbox_to_columns(
     if not candidates:
         return bbox
 
-    befores = [cb for cb in candidates if (cb[0] + cb[1]) * 0.5 < beam_mid_along]
-    afters  = [cb for cb in candidates if (cb[0] + cb[1]) * 0.5 >= beam_mid_along]
-    new_lo = max(cb[1] for cb in befores) if befores else bbox[along_lo]
-    new_hi = min(cb[0] for cb in afters)  if afters  else bbox[along_hi]
+    # Snap to column CENTRES — Revit convention is centreline-to-centreline
+    # framing; the auto-join trims each beam end to the column face at commit.
+    # (Snapping to the face directly breaks recipe_sanitizer's 150 mm
+    # centre-tolerance filter.)
+    def _center(cb):
+        return (cb[0] + cb[1]) * 0.5
+    befores = [cb for cb in candidates if _center(cb) < beam_mid_along]
+    afters  = [cb for cb in candidates if _center(cb) >= beam_mid_along]
+    new_lo = max(_center(cb) for cb in befores) if befores else bbox[along_lo]
+    new_hi = min(_center(cb) for cb in afters)  if afters  else bbox[along_hi]
     if new_hi - new_lo < beam_across:       # sanity check — abandon if degenerate
         return bbox
 
