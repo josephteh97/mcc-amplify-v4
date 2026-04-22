@@ -3236,8 +3236,19 @@ namespace RevitModelBuilderAddin
                 try
                 {
                     var line = Line.CreateBound(start, end);
-                    doc.Create.NewFamilyInstance(
+                    FamilyInstance inst = doc.Create.NewFamilyInstance(
                         line, beamSym, level, StructuralType.Beam);
+
+                    // Revit's structural framing has START_EXTENSION / END_EXTENSION
+                    // instance parameters that extend the beam body BEYOND the line
+                    // endpoints. The recipe sanitizer already trimmed the line to
+                    // the column faces, so any non-zero default extension would
+                    // push the body back into the column. Force both to 0.
+                    if (inst != null)
+                    {
+                        TrySetParamFeet(inst, BuiltInParameter.START_EXTENSION, 0.0);
+                        TrySetParamFeet(inst, BuiltInParameter.END_EXTENSION,   0.0);
+                    }
                     placed++;
                 }
                 catch (Exception ex)
@@ -3247,6 +3258,21 @@ namespace RevitModelBuilderAddin
                 }
             }
             Log($"Beams: {placed} placed, {skipped} skipped.");
+        }
+
+        /// <summary>
+        /// Safely set a double built-in parameter on an element (internal units = feet).
+        /// No-op if the parameter is missing, read-only, or the set call throws.
+        /// </summary>
+        private static void TrySetParamFeet(Element el, BuiltInParameter bip, double valueFeet)
+        {
+            try
+            {
+                var p = el.get_Parameter(bip);
+                if (p != null && !p.IsReadOnly && p.StorageType == StorageType.Double)
+                    p.Set(valueFeet);
+            }
+            catch { /* parameter not available on this family — ignore */ }
         }
 
         /// <summary>
