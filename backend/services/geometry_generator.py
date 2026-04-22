@@ -164,6 +164,10 @@ class GeometryGenerator:
         # without mutating the class and affecting other GeometryGenerator instances.
         self._min_column_mm           = 800.0
         # Default beam cross-section dimensions — 800×800 matches column default.
+        # We do NOT derive beam section from the YOLO bbox short-side: the bbox's
+        # on-plan short side is a drafting-line thickness, not a structural section,
+        # and trusting it produces hallucinated type names like "1050x800mm".
+        self.default_beam_width       = float(os.getenv("DEFAULT_BEAM_WIDTH_MM", "800"))
         self.default_beam_depth       = float(os.getenv("DEFAULT_BEAM_DEPTH_MM", "800"))
 
     def apply_profile(self, profile: dict) -> None:
@@ -598,8 +602,14 @@ class GeometryGenerator:
     ) -> List[Dict]:
         """Convert detected beam bboxes to Revit StructuralFraming recipe entries.
 
-        Beam axis is inferred from the long dimension of the YOLO bbox.
-        Cross-section width = short bbox dimension (mm); depth = DEFAULT_BEAM_DEPTH_MM (800 mm).
+        The YOLO bbox is used ONLY for the beam's centre-line (long axis + span).
+        The cross-section is the project default (DEFAULT_BEAM_WIDTH_MM ×
+        DEFAULT_BEAM_DEPTH_MM, 800×800 for concrete to match the column default)
+        unless the admittance layer supplies `section_width_mm` / `section_depth_mm`
+        from a parsed annotation label — we never infer the section from the
+        bbox short side (it's a drafting-line thickness, not a structural size,
+        and produces hallucinated type names like "1050x800mm").
+
         Beams are placed at `level1_elev` so they sit flush with the column tops;
         reference level is set to "Level 1" to match.
         """
@@ -625,32 +635,32 @@ class GeometryGenerator:
             dy = abs(y2_mm - y1_mm)
 
             if dx >= dy:
-                # Beam spans in X; cross-section width = Y extent
+                # Beam spans in X; centre its axis on the bbox mid-Y
                 cy = (y1_mm + y2_mm) / 2.0
-                start = {"x": min(x1_mm, x2_mm), "y": cy,  "z": z_mm}
-                end   = {"x": max(x1_mm, x2_mm), "y": cy,  "z": z_mm}
-                width_mm = dy
+                start = {"x": min(x1_mm, x2_mm), "y": cy, "z": z_mm}
+                end   = {"x": max(x1_mm, x2_mm), "y": cy, "z": z_mm}
             else:
-                # Beam spans in Y; cross-section width = X extent
+                # Beam spans in Y; centre its axis on the bbox mid-X
                 cx = (x1_mm + x2_mm) / 2.0
                 start = {"x": cx, "y": min(y1_mm, y2_mm), "z": z_mm}
                 end   = {"x": cx, "y": max(y1_mm, y2_mm), "z": z_mm}
-                width_mm = dx
 
             span = abs(end["x"] - start["x"]) + abs(end["y"] - start["y"])
             if span < 10.0:   # skip degenerate detections (< 10 mm span)
                 continue
 
-            # Fall back to 800 mm (matching column default) when bbox gives no usable width
-            width_mm  = round(width_mm, 1) if width_mm >= 100.0 else self.default_beam_depth
-            depth_mm  = self.default_beam_depth
-            max_dim   = max(width_mm, depth_mm)
-            min_dim   = min(width_mm, depth_mm)
+            # Cross-section: defaults only, unless the admittance layer has
+            # already resolved a real section from a parsed annotation.
+            metadata = elem.get("admittance_metadata") or {}
+            width_mm = float(metadata.get("section_width_mm") or self.default_beam_width)
+            depth_mm = float(metadata.get("section_depth_mm") or self.default_beam_depth)
+            max_dim  = max(width_mm, depth_mm)
+            min_dim  = min(width_mm, depth_mm)
 
             # Default to concrete (RC): CJY_RC Structural Framing is the project's
             # standard beam family. Only switch to steel when the admittance layer
             # explicitly identified the material as steel.
-            material = (elem.get("admittance_metadata") or {}).get("material") or "rc"
+            material = metadata.get("material") or "rc"
             family_prefix = {"rc": "RCBeam", "steel": "SteelBeam"}.get(material, "RCBeam")
             entry = {
                 "id":          elem.get("id"),
