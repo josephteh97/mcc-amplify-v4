@@ -647,8 +647,11 @@ class GeometryGenerator:
             max_dim   = max(width_mm, depth_mm)
             min_dim   = min(width_mm, depth_mm)
 
-            material = (elem.get("admittance_metadata") or {}).get("material")
-            family_prefix = {"rc": "RCBeam", "steel": "SteelBeam"}.get(material, "Beam")
+            # Default to concrete (RC): CJY_RC Structural Framing is the project's
+            # standard beam family. Only switch to steel when the admittance layer
+            # explicitly identified the material as steel.
+            material = (elem.get("admittance_metadata") or {}).get("material") or "rc"
+            family_prefix = {"rc": "RCBeam", "steel": "SteelBeam"}.get(material, "RCBeam")
             entry = {
                 "id":          elem.get("id"),
                 "start_point": start,

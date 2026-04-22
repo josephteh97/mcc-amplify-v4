@@ -2771,6 +2771,22 @@ namespace RevitModelBuilderAddin
         }
 
         /// <summary>
+        /// Returns true if the family name looks like a steel beam (W/UB/UC/I-beam/purlin).
+        /// We want to skip these and prefer the CJY_RC concrete framing family.
+        /// </summary>
+        private static bool IsSteelFramingFamily(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            string n = name.ToUpperInvariant();
+            return n.Contains("STEEL")      || n.Contains("I BEAM")      ||
+                   n.Contains("I-BEAM")     || n.Contains("W-SHAPE")     ||
+                   n.Contains("WIDE FLANGE")|| n.Contains("UB-")         ||
+                   n.Contains("UC-")        || n.StartsWith("UB ")       ||
+                   n.StartsWith("UC ")      || n.Contains("PURLIN")      ||
+                   n.Contains("L-ANGLE")    || n.Contains("L ANGLE");
+        }
+
+        /// <summary>
         /// Load or find the CJY concrete column families (rectangular and round).
         /// Search priority per family type:
         ///   1. Already in doc: prefer "CJY" families; skip UC/Universal entirely.
@@ -3182,20 +3198,13 @@ namespace RevitModelBuilderAddin
         {
             if (framings == null || framings.Count == 0) return;
 
-            // Prefer a CJY_-branded concrete beam family; fall back to any StructuralFraming symbol.
-            FamilySymbol baseSym = new FilteredElementCollector(doc)
-                .OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
-                .Where(s => s.Category?.Id?.IntegerValue ==
-                            (int)BuiltInCategory.OST_StructuralFraming)
-                .OrderByDescending(s => s.FamilyName.StartsWith("CJY_",
-                    StringComparison.OrdinalIgnoreCase))
-                .FirstOrDefault();
-
+            FamilySymbol baseSym = LoadStructuralFramingFamily(doc);
             if (baseSym == null)
             {
                 Log("[WARN] No structural framing family found — beams skipped.");
                 return;
             }
+            Log($"Framing family: '{baseSym.FamilyName}', base type: '{baseSym.Name}'");
 
             int placed = 0, skipped = 0;
             foreach (var beam in framings)
@@ -3238,6 +3247,86 @@ namespace RevitModelBuilderAddin
                 }
             }
             Log($"Beams: {placed} placed, {skipped} skipped.");
+        }
+
+        /// <summary>
+        /// Load or find the CJY_RC structural framing family (default 800×800 concrete beam).
+        /// Search priority:
+        ///   1. Already in doc: prefer CJY_-branded concrete; skip steel/I-beams/purlins/angles.
+        ///   2. Custom folder "3. Revit Family Files\2. beam (structural framing)".
+        ///   3. Any non-steel StructuralFraming symbol already in doc (last-resort fallback).
+        /// </summary>
+        private FamilySymbol LoadStructuralFramingFamily(Document doc)
+        {
+            // ── Step 1: scan symbols already in the document ──────────────────
+            var inDoc = new FilteredElementCollector(doc)
+                .OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
+                .Where(s => s.Category?.Id?.IntegerValue ==
+                            (int)BuiltInCategory.OST_StructuralFraming)
+                .ToList();
+
+            FamilySymbol cjySym = inDoc.FirstOrDefault(s =>
+                !IsSteelFramingFamily(s.FamilyName) &&
+                s.FamilyName.IndexOf("CJY", StringComparison.OrdinalIgnoreCase) >= 0);
+            if (cjySym != null)
+            {
+                Log($"Using preferred CJY framing family in doc: '{cjySym.FamilyName}' / '{cjySym.Name}'");
+                return cjySym;
+            }
+
+            // ── Step 2: search custom folders (same spelling variants as columns) ─
+            var customFolders = new[] {
+                @"C:\MyDocuments\3. Revit Family Files\2. beam (structural framing)",
+                @"C:\MyDocument\3. Revit Family Files\2. beam (structural framing)",
+                @"C:\MyDocuments\3. Revit Family Files",
+                @"C:\MyDocument\3. Revit Family Files",
+                @"C:\Users\Public\Documents\3. Revit Family Files",
+            };
+            var patterns = new[] {
+                "*CJY*RC*Structural*Framing*.rfa",
+                "*CJY*Structural*Framing*.rfa",
+                "*CJY*Beam*.rfa",
+            };
+
+            foreach (var folder in customFolders)
+            {
+                if (!Directory.Exists(folder)) continue;
+                foreach (var pattern in patterns)
+                {
+                    string[] candidates;
+                    try { candidates = Directory.GetFiles(folder, pattern, SearchOption.AllDirectories); }
+                    catch { candidates = new string[0]; }
+                    foreach (var path in candidates)
+                    {
+                        string fileName = Path.GetFileName(path);
+                        if (IsSteelFramingFamily(fileName)) continue;
+                        try
+                        {
+                            if (doc.LoadFamily(path, out Family fam) && fam != null)
+                            {
+                                var sym = fam.GetFamilySymbolIds()
+                                             .Select(id => doc.GetElement(id) as FamilySymbol)
+                                             .FirstOrDefault(s => s != null);
+                                if (sym != null)
+                                {
+                                    Log($"Loaded framing family from custom folder: {path}");
+                                    return sym;
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"[WARN] LoadFamily '{path}' failed: {ex.Message}");
+                        }
+                    }
+                }
+            }
+
+            // ── Step 3: last resort — any non-steel framing symbol in doc ─────
+            FamilySymbol fallback = inDoc.FirstOrDefault(s => !IsSteelFramingFamily(s.FamilyName));
+            if (fallback != null)
+                Log($"[WARN] CJY_RC framing not found — falling back to '{fallback.FamilyName}'.");
+            return fallback;
         }
 
         private void CreateWalls(Document doc, List<WallItem> walls)
