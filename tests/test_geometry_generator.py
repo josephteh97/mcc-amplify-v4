@@ -72,13 +72,14 @@ class TestBuildStructuralFramingParameters:
 
     def test_z_at_beam_centroid(self, gen):
         """Beam insertion line sits at the beam CENTROID elevation:
-        `Level0_elev + slab_thickness + depth / 2`. Combined with the Add-in's
-        Z_JUSTIFICATION=Center this puts the beam bottom flush on the ground-
-        slab top (at +slab_thickness) and the beam body entirely above Level 0."""
+        `Level0_elev + slab_thickness − depth / 2`. Combined with the Add-in's
+        Z_JUSTIFICATION=Center this puts the beam TOP flush with the ground-
+        slab top (at +slab_thickness) and the beam body hanging below Level 0
+        into the foundation zone."""
         beams = [_make_beam(0, 100, 290, 900, 310)]
         result = gen._build_structural_framing_parameters(beams, _GRID, _LEVEL0_ELEV)
         expected_z = (
-            _LEVEL0_ELEV + gen.default_floor_thickness + gen.default_beam_depth / 2.0
+            _LEVEL0_ELEV + gen.default_floor_thickness - gen.default_beam_depth / 2.0
         )
         assert result[0]["start_point"]["z"] == pytest.approx(expected_z)
         assert result[0]["end_point"]["z"]   == pytest.approx(expected_z)

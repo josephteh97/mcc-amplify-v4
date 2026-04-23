@@ -655,14 +655,15 @@ class GeometryGenerator:
         and produces hallucinated type names like "1050x800mm").
 
         Z convention: beams are referenced to **Level 0** (ground datum at
-        elevation 0) and sit ENTIRELY ABOVE Level 0 — the beam bottom is
-        flush with the ground-slab top (z = +slab_thickness), so the beam
-        body stands on the slab rather than hanging below it. The insertion
-        line is placed at the beam CENTROID elevation; the Add-in sets
-        Z_JUSTIFICATION=Center, which every family honours (Top/Bottom are
-        fragile without dedicated reference planes).
+        elevation 0). The beam TOP is flush with the ground-slab top
+        (z = +slab_thickness) — standard structural datum where the slab
+        pours down onto the beam top. The beam body hangs BELOW Level 0
+        into the foundation zone. The insertion line is placed at the
+        beam CENTROID elevation; the Add-in sets Z_JUSTIFICATION=Center,
+        which every family honours (Top/Bottom are fragile without
+        dedicated reference planes).
 
-            centroid_z = Level0 + slab_thickness + depth / 2
+            centroid_z = Level0 + slab_thickness − depth / 2
 
         The slab_thickness used per-beam is the resolved zone thickness
         from NSP/CIS codes parsed off the drawing's NOTES/legend (see
@@ -697,7 +698,7 @@ class GeometryGenerator:
             depth_mm = float(metadata.get("section_depth_mm") or self.default_beam_depth)
 
             slab_thickness = self._beam_slab_thickness(mid_x, mid_y, slab_regions)
-            z_mm = level0_elev + slab_thickness + depth_mm / 2.0
+            z_mm = level0_elev + slab_thickness - depth_mm / 2.0
 
             if dx >= dy:
                 start = {"x": min(x1_mm, x2_mm), "y": mid_y, "z": z_mm}
