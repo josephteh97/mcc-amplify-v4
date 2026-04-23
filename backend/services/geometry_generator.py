@@ -654,20 +654,20 @@ class GeometryGenerator:
         bbox short side (it's a drafting-line thickness, not a structural size,
         and produces hallucinated type names like "1050x800mm").
 
-        Z convention: the Revit Level line is the datum at the slab bottom; the
-        slab sits ON the Level and the beam TOP is flush with the slab top
-        (Level is a centreline that cuts through the beam). We place the
-        insertion line at the beam's CENTROID elevation and let the Add-in set
-        Z_JUSTIFICATION=Center. Relying on Top/Bottom is fragile because custom
-        families often ignore those without dedicated reference planes; every
-        family honours Center (it's a pure geometric invariant).
+        Z convention: the Revit Level line is the datum at the TOP of the
+        structural slab. The beam HANGS UNDER the slab — its top is flush
+        with the slab soffit (Level − slab_thickness), so the beam body sits
+        entirely below Level and well below the column top (columns rise from
+        Level 0 to Level 1). The insertion line is placed at the beam CENTROID
+        elevation; the Add-in sets Z_JUSTIFICATION=Center, which every family
+        honours (Top/Bottom are fragile without dedicated reference planes).
 
-            centroid_z = Level + slab_thickness − depth / 2
+            centroid_z = Level − slab_thickness − depth / 2
 
-        With depth=800 and slab=200: centroid at Level−200, top at Level+200,
-        bottom at Level−600 — beam intersects column in the top 600 mm.
-        Per-zone slab thickness (NSP2/300CIS/…) comes later; uniform
-        `default_floor_thickness` is used until then.
+        With depth=800 and slab=200: top at Level−200, centroid at Level−600,
+        bottom at Level−1000 — beam sits below the slab with its top at the
+        slab soffit. Per-zone slab thickness (NSP2/300CIS/…) comes later;
+        uniform `default_floor_thickness` is used until then.
         """
         params: List[Dict] = []
 
@@ -696,7 +696,7 @@ class GeometryGenerator:
             depth_mm = float(metadata.get("section_depth_mm") or self.default_beam_depth)
 
             slab_thickness = self._beam_slab_thickness(mid_x, mid_y, slab_regions)
-            z_mm = level1_elev + slab_thickness - depth_mm / 2.0
+            z_mm = level1_elev - slab_thickness - depth_mm / 2.0
 
             if dx >= dy:
                 start = {"x": min(x1_mm, x2_mm), "y": mid_y, "z": z_mm}
