@@ -86,7 +86,7 @@ class TestLocateZoneLabels:
 class TestResolveCodeThickness:
     def test_self_describing(self):
         assert resolve_code_thickness("300CIS", None) == 300.0
-        assert resolve_code_thickness("250SOG", None) == 250.0
+        assert resolve_code_thickness("250CIS", None) == 250.0
 
     def test_lookup_hit(self):
         assert resolve_code_thickness("NSP2", {"NSP2": 250.0}) == 250.0

@@ -9,9 +9,9 @@ Stages executed:
        ColumnDetectionAgent        — YOLO tiling inference
        WallDetectionAgent          — vector path analysis (via fusion)
        StructuralFramingDetectionAgent — YOLO tiling inference
-       SlabDetectionAgent          — YOLO tiling inference
        StairsDetectionAgent        — stub, model pending
        LiftDetectionAgent          — stub, model pending
+       SlabDetectionAgent          — stub, model pending
   4. Detection Merger     (HybridFusionPipeline + grid pixel alignment)
   4c. Intelligence layer  (TypeResolver → CrossElementValidator → ValidationAgent)
   5. BIM Enrichment       (BIMTranslatorEnricher + element deduplication)
@@ -103,15 +103,10 @@ class PipelineOrchestrator:
             min_squareness=0.0,   # beams are rectangular, not square
             max_side=300,
         )
-        self.slab_agent = YoloDetectionAgent(
-            load_yolo(weights / "slab-detect.pt"), "slab",
-            min_squareness=0.0,   # slabs are rectangular, not square
-            max_side=2000,        # slabs can span large regions
-        )
-        # Untrained agents return [] until a model is available
         self.wall_agent  = UntrainedDetectionAgent("wall")    # walls extracted by fusion pipeline
         self.stairs_agent = UntrainedDetectionAgent("stairs")
         self.lift_agent   = UntrainedDetectionAgent("lift")
+        self.slab_agent   = UntrainedDetectionAgent("slab")
 
     # ──────────────────────────────────────────────────────────────────────────
 

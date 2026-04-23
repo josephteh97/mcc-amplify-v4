@@ -5,8 +5,8 @@ PDF drawing page.
 Construction drawings encode slab thickness via zone codes dropped on plan
 regions:
   - Lookup codes       — `NSP\\d+`:  resolved against a NOTES legend block.
-  - Self-describing    — `\\d{3}CIS` / `\\d{3}SOG`:  leading digits are the
-                          thickness in mm (e.g. `300CIS` → 300 mm).
+  - Self-describing    — `\\d{3}CIS`:  leading digits are the thickness in mm
+                          (e.g. `300CIS` → 300 mm, cast-in-situ).
 
 Two public functions, no class needed:
 
@@ -49,7 +49,7 @@ from loguru import logger
 
 
 _LOOKUP_RE   = re.compile(r"^NSP\d+$",            re.IGNORECASE)
-_SELFDESC_RE = re.compile(r"^(\d{3})(CIS|SOG)$",  re.IGNORECASE)
+_SELFDESC_RE = re.compile(r"^(\d{3})CIS$",        re.IGNORECASE)
 _NOTES_RE    = re.compile(r"^NOTES:?$",           re.IGNORECASE)
 _INT_RE      = re.compile(r"^\d+$")
 
@@ -113,7 +113,7 @@ def locate_zone_labels(
 def resolve_code_thickness(code: str, legend: dict[str, float] | None) -> float | None:
     """Return thickness_mm for *code*, or None if it can't be resolved.
 
-    Self-describing (`\\d{3}CIS` / `\\d{3}SOG`) yields the leading integer.
+    Self-describing (`\\d{3}CIS`) yields the leading integer.
     Lookup (`NSP\\d+`) returns legend[code.upper()] if present.
     """
     up = (code or "").upper()
