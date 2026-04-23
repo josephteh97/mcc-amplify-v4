@@ -21,9 +21,12 @@ Adds to each detection dict:
   is_dfma_compliant: bool
   is_orphan: bool             — True = off_grid AND isolated
 
-Does NOT remove elements. Does NOT modify coordinates.
+Does NOT remove elements (see remove_outside_grid for culling).
+Does NOT modify coordinates.
 """
 from __future__ import annotations
+
+import os
 
 from loguru import logger
 
@@ -31,6 +34,7 @@ from backend.services.intelligence.cross_element_validator import OFF_GRID, ISOL
 
 _MIN_BAY_MM = 3000.0
 _MAX_BAY_MM = 12000.0
+_GRID_BOUNDS_TOLERANCE_PX: float = float(os.getenv("GRID_BOUNDS_TOLERANCE_PX", "50"))
 
 
 def enforce_rules(
@@ -62,6 +66,82 @@ def enforce_rules(
         violations, orphans, len(detections),
     )
     return detections
+
+
+def remove_outside_grid(
+    detections: list[dict],
+    grid_info: dict,
+    tolerance_px: float = _GRID_BOUNDS_TOLERANCE_PX,
+) -> tuple[list[dict], list[str]]:
+    """
+    Drop detections whose centre falls outside the outer-grid rectangle.
+
+    Grid rect (pixels) =
+      [min(x_lines_px) - tol, min(y_lines_px) - tol,
+       max(x_lines_px) + tol, max(y_lines_px) + tol]
+
+    `tolerance_px` absorbs drafting slop — a column sitting ON the outermost
+    grid line can land a few pixels outside due to YOLO jitter.
+
+    For each detection, use `center` if present, otherwise the bbox midpoint.
+    Detections missing both fields are kept (something else will catch them).
+
+    Returns (kept, actions) where actions is a human-readable reason per
+    removal — mirrors recipe_sanitizer's return shape.
+
+    If grid_info is missing or has fewer than 2 lines on either axis, the
+    grid rect isn't well-defined — no-op and log a warning.
+
+    TODO: polygon-aware culling — L-shaped / notched footprints have cells
+    inside the outer grid rect but outside the building envelope. Extend with
+    a boundary-polygon test once building-outline detection lands.
+    """
+    x_lines = (grid_info or {}).get("x_lines_px") or []
+    y_lines = (grid_info or {}).get("y_lines_px") or []
+
+    if len(x_lines) < 2 or len(y_lines) < 2:
+        logger.warning(
+            "remove_outside_grid: grid rect undefined "
+            "(x_lines={}, y_lines={}) — no-op",
+            len(x_lines), len(y_lines),
+        )
+        return detections, []
+
+    x_lo = min(x_lines) - tolerance_px
+    x_hi = max(x_lines) + tolerance_px
+    y_lo = min(y_lines) - tolerance_px
+    y_hi = max(y_lines) + tolerance_px
+
+    kept: list[dict] = []
+    actions: list[str] = []
+
+    for det in detections:
+        center = det.get("center")
+        if center and len(center) >= 2:
+            cx, cy = float(center[0]), float(center[1])
+        else:
+            bbox = det.get("bbox")
+            if not bbox or len(bbox) < 4:
+                kept.append(det)
+                continue
+            cx = (float(bbox[0]) + float(bbox[2])) / 2.0
+            cy = (float(bbox[1]) + float(bbox[3])) / 2.0
+
+        if x_lo <= cx <= x_hi and y_lo <= cy <= y_hi:
+            kept.append(det)
+        else:
+            actions.append(
+                f"{det.get('type', '?')} id={det.get('id', '?')} "
+                f"@({cx:.0f},{cy:.0f}) outside grid rect "
+                f"[{x_lo:.0f},{y_lo:.0f}]-[{x_hi:.0f},{y_hi:.0f}]"
+            )
+
+    if actions:
+        logger.info(
+            "ValidationAgent: removed {} detection(s) outside grid rect",
+            len(actions),
+        )
+    return kept, actions
 
 
 def _check_bay_spacing(

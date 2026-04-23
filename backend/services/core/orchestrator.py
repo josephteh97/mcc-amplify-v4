@@ -55,7 +55,7 @@ from backend.services.detection_agents import (
 # ── Intelligence layer ────────────────────────────────────────────────────────
 from backend.services.intelligence.type_resolver import resolve_types
 from backend.services.intelligence.cross_element_validator import validate_elements
-from backend.services.intelligence.validation_agent import enforce_rules
+from backend.services.intelligence.validation_agent import enforce_rules, remove_outside_grid
 from backend.services.intelligence.debug_overlay import save_join_conflict_overlay
 from backend.services.intelligence.admittance import judge as admittance_judge
 from backend.services.intelligence.admittance import ElementContext, REJECT
@@ -66,6 +66,11 @@ from backend.services.revit_warning_handler import handle_warnings as handle_rev
 
 # ── Observer (fire-and-forget event bus for chat agent) ──────────────────────
 from backend.chat_agent.pipeline_observer import observer
+
+
+def _drop_by_id(seq: list[dict], dropped_ids: set[int]) -> list[dict]:
+    """Filter dicts out of *seq* whose Python id() is in *dropped_ids*."""
+    return [d for d in seq if id(d) not in dropped_ids]
 
 
 class PipelineOrchestrator:
@@ -289,7 +294,20 @@ class PipelineOrchestrator:
             # ── DfMA bay-spacing checks (still handled by legacy agent) ─────
             # Admittance layer does per-element judgment; grid-level DfMA
             # rules (bay min/max) remain on enforce_rules.
-            all_dets = _column_dets + framing_raw
+            # Cull before enforce_rules so violation counts don't include
+            # soon-to-drop title-block / legend / border noise.
+            pre_cull = _column_dets + framing_raw
+            all_dets, out_of_grid_actions = remove_outside_grid(pre_cull, grid_info)
+            if out_of_grid_actions:
+                kept_ids = {id(d) for d in all_dets}
+                dropped_ids = {id(d) for d in pre_cull if id(d) not in kept_ids}
+                refined_detections = _drop_by_id(refined_detections, dropped_ids)
+                _column_dets = _drop_by_id(_column_dets, dropped_ids)
+                emit(observer.warn(job_id, "outside_grid_culled", {
+                    "count": len(out_of_grid_actions),
+                    "examples": out_of_grid_actions[:5],
+                }))
+
             enforce_rules(
                 all_dets,
                 grid_info=grid_info,
@@ -322,8 +340,8 @@ class PipelineOrchestrator:
                 if (d.get("admittance_decision") or {}).get("action") == REJECT
             }
             before = len(refined_detections)
-            refined_detections = [d for d in refined_detections if id(d) not in rejected_ids]
-            _column_dets = [d for d in _column_dets if id(d) not in rejected_ids]
+            refined_detections = _drop_by_id(refined_detections, rejected_ids)
+            _column_dets = _drop_by_id(_column_dets, rejected_ids)
             deleted = before - len(refined_detections)
             if deleted:
                 rejected = [d for d in all_dets if id(d) in rejected_ids]

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from backend.services.intelligence.type_resolver import resolve_types
 from backend.services.intelligence.cross_element_validator import validate_elements
-from backend.services.intelligence.validation_agent import enforce_rules
+from backend.services.intelligence.validation_agent import enforce_rules, remove_outside_grid
 from backend.services.intelligence.bim_translator_enricher import enrich_recipe
 from backend.services.intelligence.recipe_sanitizer import sanitize_recipe
 
@@ -141,6 +141,40 @@ class TestRecipeSanitizerFramingRules:
         }
         result, actions = sanitize_recipe(recipe)
         assert result["structural_framing"] == []
+
+
+def test_remove_outside_grid_drops_detections_past_outer_lines():
+    grid = {
+        "x_lines_px": [100.0, 500.0, 900.0],
+        "y_lines_px": [100.0, 500.0, 900.0],
+    }
+    dets = [
+        {"id": "inside",   "center": [500, 500], "bbox": [490, 490, 510, 510]},
+        {"id": "on_edge",  "center": [100, 100], "bbox": [95, 95, 105, 105]},
+        {"id": "way_out",  "center": [1200, 500], "bbox": [1190, 490, 1210, 510]},
+        {"id": "titleblk", "center": [50, 1000],  "bbox": [40, 990, 60, 1010]},
+    ]
+    kept, actions = remove_outside_grid(dets, grid)
+    kept_ids = {d["id"] for d in kept}
+    assert kept_ids == {"inside", "on_edge"}
+    assert len(actions) == 2
+
+
+def test_remove_outside_grid_noop_when_grid_missing():
+    dets = [{"id": "x", "center": [5000, 5000]}]
+    kept, actions = remove_outside_grid(dets, grid_info={})
+    assert kept == dets and actions == []
+
+
+def test_remove_outside_grid_tolerance_respected():
+    grid = {"x_lines_px": [100.0, 500.0], "y_lines_px": [100.0, 500.0]}
+    dets = [{"id": "edge", "center": [540, 500], "bbox": [530, 490, 550, 510]}]
+    # default tol=50, so centre at 540 is within 500 + 50 → kept
+    kept, _ = remove_outside_grid(dets, grid)
+    assert len(kept) == 1
+    # Shrinking tol to 10 pushes it out
+    kept, _ = remove_outside_grid(dets, grid, tolerance_px=10.0)
+    assert len(kept) == 0
 
 
 def test_coordinate_immutability():
