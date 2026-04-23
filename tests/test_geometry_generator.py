@@ -71,11 +71,8 @@ class TestBuildStructuralFramingParameters:
         assert dy > dx, "Vertical beam should span in Y"
 
     def test_z_at_beam_centroid(self, gen):
-        """Beam insertion line sits at the beam CENTROID elevation:
-        `Level0_elev + slab_thickness − depth / 2`. Combined with the Add-in's
-        Z_JUSTIFICATION=Center this puts the beam TOP flush with the ground-
-        slab top (at +slab_thickness) and the beam body hanging below Level 0
-        into the foundation zone."""
+        """Insertion Z is the beam centroid so the Add-in's Z_JUSTIFICATION=
+        Center lands the beam TOP flush with the ground-slab top."""
         beams = [_make_beam(0, 100, 290, 900, 310)]
         result = gen._build_structural_framing_parameters(beams, _GRID, _LEVEL0_ELEV)
         expected_z = (

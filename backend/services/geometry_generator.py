@@ -663,8 +663,6 @@ class GeometryGenerator:
         which every family honours (Top/Bottom are fragile without
         dedicated reference planes).
 
-            centroid_z = Level0 + slab_thickness − depth / 2
-
         The slab_thickness used per-beam is the resolved zone thickness
         from NSP/CIS codes parsed off the drawing's NOTES/legend (see
         `_beam_slab_thickness`); `default_floor_thickness` (200 mm) is the
