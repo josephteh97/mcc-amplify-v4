@@ -3264,13 +3264,13 @@ namespace RevitModelBuilderAddin
         ///      already trimmed the centerline to column faces; any non-zero
         ///      extension would push the body back into the column.
         ///   2. Z_JUSTIFICATION = Center (1) — the recipe places the insertion
-        ///      line at the beam's CENTROID elevation (Level0 + slab − depth/2,
-        ///      referenced to Level 0 / ground datum, so the Level 0 line
-        ///      passes through the beam — top just above the line, body
-        ///      hanging well below it). Revit must interpret the curve as
-        ///      the centroid. Top/Bottom are fragile with custom families
-        ///      (they depend on explicit reference planes in the RFA); Center
-        ///      is a pure geometric invariant every family honours.
+        ///      line at the beam's CENTROID elevation (Level0 + slab + depth/2,
+        ///      referenced to Level 0 / ground datum, so the beam sits
+        ///      ENTIRELY ABOVE Level 0 with its bottom flush on the ground-
+        ///      slab top). Revit must interpret the curve as the centroid.
+        ///      Top/Bottom are fragile with custom families (they depend on
+        ///      explicit reference planes in the RFA); Center is a pure
+        ///      geometric invariant every family honours.
         /// </summary>
         private static void ApplyRCFramingPlacementDefaults(FamilyInstance inst)
         {

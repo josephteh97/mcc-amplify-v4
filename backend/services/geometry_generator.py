@@ -655,24 +655,20 @@ class GeometryGenerator:
         and produces hallucinated type names like "1050x800mm").
 
         Z convention: beams are referenced to **Level 0** (ground datum at
-        elevation 0). The Level 0 line passes THROUGH the beam — beam top
-        sits just above the line (at Level 0 + slab_thickness, flush with
-        the ground-slab top), beam body hangs well below into the foundation
-        zone. The insertion line is placed at the beam CENTROID elevation;
-        the Add-in sets Z_JUSTIFICATION=Center, which every family honours
-        (Top/Bottom are fragile without dedicated reference planes).
+        elevation 0) and sit ENTIRELY ABOVE Level 0 — the beam bottom is
+        flush with the ground-slab top (z = +slab_thickness), so the beam
+        body stands on the slab rather than hanging below it. The insertion
+        line is placed at the beam CENTROID elevation; the Add-in sets
+        Z_JUSTIFICATION=Center, which every family honours (Top/Bottom are
+        fragile without dedicated reference planes).
 
-            centroid_z = Level0 + slab_thickness − depth / 2
+            centroid_z = Level0 + slab_thickness + depth / 2
 
-        With Level0=0, slab=200 and depth=800: top at +200 (= slab top),
-        centroid at −200, bottom at −600. The Level 0 line (z=0) cuts the
-        beam 200 mm below its top; the beam top is 3000 mm below the column
-        top (columns rise Level 0 → Level 1), so beams read as "hanging
-        below" the column crowns. The slab_thickness used per-beam is the
-        resolved zone thickness from NSP/CIS codes parsed off the drawing's
-        NOTES/legend (see `_beam_slab_thickness`); `default_floor_thickness`
-        (200 mm) is the fallback when the beam midpoint doesn't land in any
-        annotated zone or the parser couldn't read a code for it.
+        The slab_thickness used per-beam is the resolved zone thickness
+        from NSP/CIS codes parsed off the drawing's NOTES/legend (see
+        `_beam_slab_thickness`); `default_floor_thickness` (200 mm) is the
+        fallback when the beam midpoint doesn't land in any annotated zone
+        or the parser couldn't read a code for it.
         """
         params: List[Dict] = []
 
@@ -701,7 +697,7 @@ class GeometryGenerator:
             depth_mm = float(metadata.get("section_depth_mm") or self.default_beam_depth)
 
             slab_thickness = self._beam_slab_thickness(mid_x, mid_y, slab_regions)
-            z_mm = level0_elev + slab_thickness - depth_mm / 2.0
+            z_mm = level0_elev + slab_thickness + depth_mm / 2.0
 
             if dx >= dy:
                 start = {"x": min(x1_mm, x2_mm), "y": mid_y, "z": z_mm}
