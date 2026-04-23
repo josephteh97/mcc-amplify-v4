@@ -28,6 +28,7 @@ from __future__ import annotations
 from backend.services.intelligence.admittance.context import ElementContext
 from backend.services.intelligence.admittance.scoring import Decision, admit, reject
 from backend.services.intelligence.admittance.signals import find_nearest_tag
+from backend.services.intelligence.cross_element_validator import _iou as _bbox_iou
 
 
 # Tune these on real data; values chosen for 300 DPI renders where
@@ -67,7 +68,7 @@ def judge(det: dict, siblings: list[dict], ctx: ElementContext) -> Decision:
         ob = other.get("bbox")
         if not ob or len(ob) < 4:
             continue
-        iou = _iou((x1, y1, x2, y2), (float(ob[0]), float(ob[1]), float(ob[2]), float(ob[3])))
+        iou = _bbox_iou([x1, y1, x2, y2], [float(ob[0]), float(ob[1]), float(ob[2]), float(ob[3])])
         if iou < _DUP_IOU_THRESH:
             continue
         other_area = abs(ob[2] - ob[0]) * abs(ob[3] - ob[1])
@@ -89,25 +90,12 @@ def judge(det: dict, siblings: list[dict], ctx: ElementContext) -> Decision:
                  area_px=round(area, 0), width_px=round(w, 0), height_px=round(h, 0))
 
 
-def _iou(a: tuple[float, float, float, float],
-         b: tuple[float, float, float, float]) -> float:
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    ix1 = max(ax1, bx1)
-    iy1 = max(ay1, by1)
-    ix2 = min(ax2, bx2)
-    iy2 = min(ay2, by2)
-    iw = max(0.0, ix2 - ix1)
-    ih = max(0.0, iy2 - iy1)
-    inter = iw * ih
-    if inter <= 0.0:
-        return 0.0
-    union = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
-    return inter / union if union > 0 else 0.0
-
-
 def _center_inside_grid(cx: float, cy: float, grid_info: dict) -> bool:
     """True when (cx, cy) lies inside the min/max extent of grid lines.
+
+    Slabs bypass the upstream ``remove_outside_grid`` cull (that pass
+    runs on columns + framing only), so this check exists as the first
+    envelope filter for slab detections.
 
     If the grid has fewer than 2 lines on either axis the check is
     skipped (returns True) — we have no envelope to reject against.
