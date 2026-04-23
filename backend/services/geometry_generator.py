@@ -610,11 +610,17 @@ class GeometryGenerator:
         bbox short side (it's a drafting-line thickness, not a structural size,
         and produces hallucinated type names like "1050x800mm").
 
-        Beams are placed at `level1_elev` so they sit flush with the column tops;
-        reference level is set to "Level 1" to match.
+        Z convention: the Revit Level line is the datum at the slab bottom; the
+        slab sits ON the Level and the beam TOP is flush with the slab top
+        (Level is a centreline that cuts through the beam, not its top). So
+        each beam's insertion line sits at `Level_elev + slab_thickness`, and
+        the Add-in sets Z_JUSTIFICATION=Top so the beam top — not its centroid —
+        lands on that line. The per-zone slab thickness lookup (NSP2/300CIS/…)
+        comes later; uniform `default_floor_thickness` is used until then.
         """
         params: List[Dict] = []
-        z_mm = level1_elev
+        slab_thickness = self.default_floor_thickness
+        z_mm = level1_elev + slab_thickness
 
         for elem in elements:
             # Admittance layer may have rejected this element; orchestrator

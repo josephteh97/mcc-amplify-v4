@@ -70,13 +70,15 @@ class TestBuildStructuralFramingParameters:
         dx = abs(e["x"] - s["x"])
         assert dy > dx, "Vertical beam should span in Y"
 
-    def test_z_at_level_1_elevation(self, gen):
-        """Beams must sit at Level 1 elevation (column top), not default_wall_height.
-        default_wall_height=2800 while Level 1=3000 → a 200mm gap below column tops."""
+    def test_z_at_level_plus_slab_thickness(self, gen):
+        """Beam insertion line sits at `Level_elev + slab_thickness` so the
+        Add-in's Z_JUSTIFICATION=Top lands the beam top flush with the slab top
+        (Level is the datum cutting through the beam, not its top)."""
         beams = [_make_beam(0, 100, 290, 900, 310)]
         result = gen._build_structural_framing_parameters(beams, _GRID, _LEVEL1_ELEV)
-        assert result[0]["start_point"]["z"] == pytest.approx(_LEVEL1_ELEV)
-        assert result[0]["end_point"]["z"]   == pytest.approx(_LEVEL1_ELEV)
+        expected_z = _LEVEL1_ELEV + gen.default_floor_thickness
+        assert result[0]["start_point"]["z"] == pytest.approx(expected_z)
+        assert result[0]["end_point"]["z"]   == pytest.approx(expected_z)
         assert result[0]["level"] == "Level 1"
 
     def test_degenerate_bbox_skipped(self, gen):
