@@ -656,11 +656,18 @@ class GeometryGenerator:
 
         Z convention: the Revit Level line is the datum at the slab bottom; the
         slab sits ON the Level and the beam TOP is flush with the slab top
-        (Level is a centreline that cuts through the beam, not its top). So
-        each beam's insertion line sits at `Level_elev + slab_thickness`, and
-        the Add-in sets Z_JUSTIFICATION=Top so the beam top — not its centroid —
-        lands on that line. The per-zone slab thickness lookup (NSP2/300CIS/…)
-        comes later; uniform `default_floor_thickness` is used until then.
+        (Level is a centreline that cuts through the beam). We place the
+        insertion line at the beam's CENTROID elevation and let the Add-in set
+        Z_JUSTIFICATION=Center. Relying on Top/Bottom is fragile because custom
+        families often ignore those without dedicated reference planes; every
+        family honours Center (it's a pure geometric invariant).
+
+            centroid_z = Level + slab_thickness − depth / 2
+
+        With depth=800 and slab=200: centroid at Level−200, top at Level+200,
+        bottom at Level−600 — beam intersects column in the top 600 mm.
+        Per-zone slab thickness (NSP2/300CIS/…) comes later; uniform
+        `default_floor_thickness` is used until then.
         """
         params: List[Dict] = []
 
@@ -684,8 +691,12 @@ class GeometryGenerator:
             mid_x = (x1_mm + x2_mm) / 2.0
             mid_y = (y1_mm + y2_mm) / 2.0
 
+            metadata = elem.get("admittance_metadata") or {}
+            width_mm = float(metadata.get("section_width_mm") or self.default_beam_width)
+            depth_mm = float(metadata.get("section_depth_mm") or self.default_beam_depth)
+
             slab_thickness = self._beam_slab_thickness(mid_x, mid_y, slab_regions)
-            z_mm = level1_elev + slab_thickness
+            z_mm = level1_elev + slab_thickness - depth_mm / 2.0
 
             if dx >= dy:
                 start = {"x": min(x1_mm, x2_mm), "y": mid_y, "z": z_mm}
@@ -698,13 +709,8 @@ class GeometryGenerator:
             if span < 10.0:   # skip degenerate detections (< 10 mm span)
                 continue
 
-            # Cross-section: defaults only, unless the admittance layer has
-            # already resolved a real section from a parsed annotation.
-            metadata = elem.get("admittance_metadata") or {}
-            width_mm = float(metadata.get("section_width_mm") or self.default_beam_width)
-            depth_mm = float(metadata.get("section_depth_mm") or self.default_beam_depth)
-            max_dim  = max(width_mm, depth_mm)
-            min_dim  = min(width_mm, depth_mm)
+            max_dim = max(width_mm, depth_mm)
+            min_dim = min(width_mm, depth_mm)
 
             # Default to concrete (RC): CJY_RC Structural Framing is the project's
             # standard beam family. Only switch to steel when the admittance layer

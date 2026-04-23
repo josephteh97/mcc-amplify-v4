@@ -3255,23 +3255,26 @@ namespace RevitModelBuilderAddin
         /// <summary>
         /// Canonical placement rules for RC structural framing instances. Every
         /// RC beam/joist/brace placed by this add-in must go through here so the
-        /// touch-not-overlap + top-at-level conventions stay consistent (future
-        /// RC element creators should call this same method after NewFamilyInstance).
+        /// touch-not-overlap + centroid-at-line conventions stay consistent
+        /// (future RC element creators should call this same method after
+        /// NewFamilyInstance).
         ///
         /// Rules:
         ///   1. START_EXTENSION / END_EXTENSION = 0 — the recipe sanitizer
         ///      already trimmed the centerline to column faces; any non-zero
         ///      extension would push the body back into the column.
-        ///   2. Z_JUSTIFICATION = Top (0) — structural drawings show beams as
-        ///      dashed lines *below* the level line; aligning the beam top with
-        ///      the insertion curve makes the body hang below Level 1 by the
-        ///      beam's own depth, matching that convention.
+        ///   2. Z_JUSTIFICATION = Center (1) — the recipe places the insertion
+        ///      line at the beam's CENTROID elevation (Level + slab − depth/2),
+        ///      so Revit must interpret the curve as the centroid. Top/Bottom
+        ///      are fragile with custom families (they depend on explicit
+        ///      reference planes in the RFA); Center is a pure geometric
+        ///      invariant every family honours.
         /// </summary>
         private static void ApplyRCFramingPlacementDefaults(FamilyInstance inst)
         {
             TrySetParamFeet(inst, BuiltInParameter.START_EXTENSION, 0.0);
             TrySetParamFeet(inst, BuiltInParameter.END_EXTENSION,   0.0);
-            TrySetParamInt (inst, BuiltInParameter.Z_JUSTIFICATION, 0);   // 0 = Top
+            TrySetParamInt (inst, BuiltInParameter.Z_JUSTIFICATION, 1);   // 1 = Center
         }
 
         /// <summary>
