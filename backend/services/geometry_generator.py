@@ -25,6 +25,7 @@ from loguru import logger
 
 from backend.services.grid_detector import GridDetector
 from backend.services.intelligence.admittance import REJECT
+from backend.services.intelligence.slab_thickness_parser import resolve_code_thickness
 
 
 # Default floor-to-floor height when no storey height annotation is present.
@@ -47,6 +48,22 @@ SQUARE_ASPECT_THRESHOLD = 0.20  # 20%
 def _nearest(v: float, candidates: List[float]) -> float:
     """Return the element of *candidates* closest to *v* by absolute difference."""
     return float(min(candidates, key=lambda c: abs(c - v)))
+
+
+def _point_in_polygon(x: float, y: float, polygon: List[Dict]) -> bool:
+    """Ray-casting PIP. *polygon* is [{"x": mm, "y": mm}, ...]."""
+    n = len(polygon)
+    if n < 3:
+        return False
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i]["x"], polygon[i]["y"]
+        xj, yj = polygon[j]["x"], polygon[j]["y"]
+        if ((yi > y) != (yj > y)) and x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi:
+            inside = not inside
+        j = i
+    return inside
 
 
 def level_elevation(levels: List[Dict], name: str, default: float = 0.0) -> float:
@@ -207,14 +224,23 @@ class GeometryGenerator:
     # Public interface
     # ------------------------------------------------------------------
 
-    async def build(self, enriched_data: Dict, grid_info: Dict) -> Dict:
+    async def build(
+        self,
+        enriched_data: Dict,
+        grid_info: Dict,
+        zone_labels_mm: Optional[List[Tuple[str, float, float]]] = None,
+        slab_legend: Optional[Dict[str, float]] = None,
+    ) -> Dict:
         """
         Build Semantic 3D parameters from enriched analysis data.
 
         Args:
-            enriched_data : data from Claude/Gemini analysis merged with YOLO
-            grid_info     : grid_info dict from GridDetector.detect()
-                            (replaces the old scale_info / pixels_per_mm approach)
+            enriched_data  : data from Claude/Gemini analysis merged with YOLO
+            grid_info      : grid_info dict from GridDetector.detect()
+            zone_labels_mm : optional [(code, x_mm, y_mm)] zone labels placed
+                             on the plan (not in a NOTES block). Used to look
+                             up per-slab thickness.
+            slab_legend    : optional {CODE: thickness_mm} from the NOTES block.
 
         Returns:
             Dict matching the RevitTransaction JSON schema consumed by
@@ -224,6 +250,13 @@ class GeometryGenerator:
 
         levels = self._build_default_levels(enriched_data)
         level1_elev = level_elevation(levels, "Level 1", self.default_wall_height)
+
+        # Build slabs first so structural_framing can resolve per-beam Z by
+        # testing the beam midpoint against each slab's polygon.
+        slabs_built = self._build_slab_parameters(
+            enriched_data.get("slabs", []), grid_info,
+            zone_labels_mm=zone_labels_mm, slab_legend=slab_legend,
+        )
 
         geometry = {
             "levels":   levels,
@@ -236,13 +269,13 @@ class GeometryGenerator:
                                       enriched_data.get("walls", []), grid_info),
             "structural_framing": self._build_structural_framing_parameters(
                                       enriched_data.get("structural_framing", []),
-                                      grid_info, level1_elev),
+                                      grid_info, level1_elev,
+                                      slab_regions=slabs_built),
             "stairs":             self._build_stairs_parameters(
                                       enriched_data.get("stairs", [])),
             "lifts":              self._build_lift_parameters(
                                       enriched_data.get("lifts", [])),
-            "slabs":  self._build_slab_parameters(
-                          enriched_data.get("slabs", []), grid_info),
+            "slabs":  slabs_built,
 
             "metadata": enriched_data.get("metadata", {}),
         }
@@ -373,6 +406,13 @@ class GeometryGenerator:
         x_mm, raw_y_mm = self.grid_detector.pixel_to_world(px, py, grid_info)
         total_y_mm = sum(grid_info.get("y_spacings_mm", []))
         return x_mm, total_y_mm - raw_y_mm
+
+    def pt_to_world(
+        self, x_pt: float, y_pt: float, grid_info: Dict, image_dpi: float,
+    ) -> Tuple[float, float]:
+        """Convert a PDF-point coordinate to Revit world mm (Y-flipped)."""
+        s = image_dpi / 72.0
+        return self._px_to_world(x_pt * s, y_pt * s, grid_info)
 
     def _snap_to_nearest_grid(
         self, x_mm: float, y_mm: float, grid_info: Dict
@@ -598,7 +638,11 @@ class GeometryGenerator:
     # ------------------------------------------------------------------
 
     def _build_structural_framing_parameters(
-        self, elements: List[Dict], grid_info: Dict, level1_elev: float
+        self,
+        elements: List[Dict],
+        grid_info: Dict,
+        level1_elev: float,
+        slab_regions: Optional[List[Dict]] = None,
     ) -> List[Dict]:
         """Convert detected beam bboxes to Revit StructuralFraming recipe entries.
 
@@ -619,8 +663,6 @@ class GeometryGenerator:
         comes later; uniform `default_floor_thickness` is used until then.
         """
         params: List[Dict] = []
-        slab_thickness = self.default_floor_thickness
-        z_mm = level1_elev + slab_thickness
 
         for elem in elements:
             # Admittance layer may have rejected this element; orchestrator
@@ -639,17 +681,18 @@ class GeometryGenerator:
 
             dx = abs(x2_mm - x1_mm)
             dy = abs(y2_mm - y1_mm)
+            mid_x = (x1_mm + x2_mm) / 2.0
+            mid_y = (y1_mm + y2_mm) / 2.0
+
+            slab_thickness = self._beam_slab_thickness(mid_x, mid_y, slab_regions)
+            z_mm = level1_elev + slab_thickness
 
             if dx >= dy:
-                # Beam spans in X; centre its axis on the bbox mid-Y
-                cy = (y1_mm + y2_mm) / 2.0
-                start = {"x": min(x1_mm, x2_mm), "y": cy, "z": z_mm}
-                end   = {"x": max(x1_mm, x2_mm), "y": cy, "z": z_mm}
+                start = {"x": min(x1_mm, x2_mm), "y": mid_y, "z": z_mm}
+                end   = {"x": max(x1_mm, x2_mm), "y": mid_y, "z": z_mm}
             else:
-                # Beam spans in Y; centre its axis on the bbox mid-X
-                cx = (x1_mm + x2_mm) / 2.0
-                start = {"x": cx, "y": min(y1_mm, y2_mm), "z": z_mm}
-                end   = {"x": cx, "y": max(y1_mm, y2_mm), "z": z_mm}
+                start = {"x": mid_x, "y": min(y1_mm, y2_mm), "z": z_mm}
+                end   = {"x": mid_x, "y": max(y1_mm, y2_mm), "z": z_mm}
 
             span = abs(end["x"] - start["x"]) + abs(end["y"] - start["y"])
             if span < 10.0:   # skip degenerate detections (< 10 mm span)
@@ -690,12 +733,17 @@ class GeometryGenerator:
         return []
 
     def _build_slab_parameters(
-        self, slabs_2d: List[Dict], grid_info: Dict
+        self,
+        slabs_2d: List[Dict],
+        grid_info: Dict,
+        zone_labels_mm: Optional[List[Tuple[str, float, float]]] = None,
+        slab_legend: Optional[Dict[str, float]] = None,
     ) -> List[Dict]:
         """Generate Revit slab parameters from SlabDetectionAgent output.
 
-        Each detected slab bbox becomes a flat boundary polygon.
-        Returns [] until SlabDetectionAgent is trained.
+        Each detected slab bbox becomes a flat boundary polygon. Thickness is
+        resolved from a containing zone label (if any) via NOTES legend or a
+        self-describing code; otherwise falls back to default_floor_thickness.
         """
         params: List[Dict] = []
         for i, slab in enumerate(slabs_2d):
@@ -710,11 +758,57 @@ class GeometryGenerator:
                     for pt in [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
                 )
             ]
+            thickness = self._resolve_slab_thickness(
+                boundary_mm, zone_labels_mm, slab_legend,
+            )
             params.append({
                 "id":              slab.get("id", f"slab_{i}"),
                 "boundary_points": boundary_mm,
-                "thickness":       self.default_floor_thickness,
+                "thickness":       thickness,
                 "elevation":       0.0,
                 "level":           "Level 0",
             })
         return params
+
+    # ------------------------------------------------------------------
+    # Per-region slab thickness resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_slab_thickness(
+        self,
+        region_polygon_mm: List[Dict],
+        zone_labels_mm: Optional[List[Tuple[str, float, float]]],
+        legend: Optional[Dict[str, float]],
+    ) -> float:
+        """Return slab thickness for *region_polygon_mm* in mm.
+
+        Tests each zone label's centre against the region polygon (ray-cast
+        PIP). The first containing label is resolved via
+        slab_thickness_parser.resolve_code_thickness; falls through to
+        self.default_floor_thickness on any miss.
+        """
+        if not zone_labels_mm or len(region_polygon_mm) < 3:
+            return float(self.default_floor_thickness)
+        for code, lx, ly in zone_labels_mm:
+            if not _point_in_polygon(lx, ly, region_polygon_mm):
+                continue
+            t = resolve_code_thickness(code, legend)
+            if t is not None:
+                return t
+        return float(self.default_floor_thickness)
+
+    def _beam_slab_thickness(
+        self,
+        mid_x: float,
+        mid_y: float,
+        slab_regions: Optional[List[Dict]],
+    ) -> float:
+        """Return thickness of the first slab region containing (mid_x, mid_y),
+        or the uniform default when no region matches."""
+        if not slab_regions:
+            return float(self.default_floor_thickness)
+        for slab in slab_regions:
+            poly = slab.get("boundary_points") or []
+            if len(poly) >= 3 and _point_in_polygon(mid_x, mid_y, poly):
+                return float(slab.get("thickness", self.default_floor_thickness))
+        return float(self.default_floor_thickness)

@@ -42,8 +42,8 @@ backend/services/intelligence/admittance/
     rules/
         framing_rules.py   # beam-column join judgment + material tag
         column_rules.py    # off-grid deletion
+        slab_rules.py      # area floor, grid-envelope check, overlap dedup
         # wall_rules.py    # TODO
-        # slab_rules.py    # TODO
 ```
 
 ## Framing rule (reference implementation)

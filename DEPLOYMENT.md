@@ -72,11 +72,11 @@ flowchart TD
         direction LR
         G["Grid Agent"]
         C["Column Agent\ncolumn-detect.pt ✅"]
-        F["Framing Agent\nstructural-framing.pt ✅"]
+        F["Framing Agent\nstructural-framing-detect.pt ✅"]
         W["Wall Agent (stub) 🚧"]
         ST["Stairs (stub) 🚧"]
         LI["Lift (stub) 🚧"]
-        SL["Slab (stub) 🚧"]
+        SL["Slab Agent\nslab-detect.pt ✅"]
     end
 
     AGENTS --> MERGE["Stage 4: Detection Merger\nHybridFusionPipeline + grid pixel alignment"]
@@ -247,11 +247,12 @@ chmod -R 755 data/ logs/
 Place the trained YOLO weights at:
 
 ```
-backend/ml/weights/column-detect.pt          ← structural column detection
-backend/ml/weights/structural-framing.pt     ← beam / structural framing detection
+backend/ml/weights/column-detect.pt              ← structural column detection
+backend/ml/weights/structural-framing-detect.pt  ← beam / structural framing detection
+backend/ml/weights/slab-detect.pt                ← slab detection
 ```
 
-Both files must be present for full detection. The pipeline continues if either is missing (vector-only or column-only fallback), but detection quality will be reduced.
+All three files must be present for full detection. The pipeline continues if any is missing (vector-only or partial-agent fallback), but detection quality will be reduced.
 
 ### 1.9 Register Windows Hostname (first-time only)
 
@@ -619,7 +620,8 @@ mcc-amplify-v4/
 |   |   +-- corrections_logger.py       <- Logs human corrections for YOLO retraining
 |   +-- ml/weights/
 |       |-- column-detect.pt             <- YOLO column weights
-|       +-- structural-framing.pt        <- YOLO beam (structural framing) weights
+|       |-- structural-framing-detect.pt <- YOLO beam (structural framing) weights
+|       +-- slab-detect.pt               <- YOLO slab weights
 |-- revit_server/RevitAddin/            <- C# Revit 2023 Add-in (build on Windows)
 |-- frontend/src/                       <- React + Three.js web UI
 +-- tests/
@@ -640,7 +642,8 @@ mcc-amplify-v4/
 - [ ] `WINDOWS_REVIT_SERVER=http://LT-HQ-277:5000` set correctly
 - [ ] Intelligence middleware env vars reviewed (see Part 5)
 - [ ] `backend/ml/weights/column-detect.pt` present
-- [ ] `backend/ml/weights/structural-framing.pt` present
+- [ ] `backend/ml/weights/structural-framing-detect.pt` present
+- [ ] `backend/ml/weights/slab-detect.pt` present
 - [ ] Data directories created
 - [ ] Windows hostname added to `/etc/hosts`
 - [ ] `curl http://LT-HQ-277:5000/health` returns `Revit Model Builder ready`

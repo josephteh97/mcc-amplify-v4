@@ -22,13 +22,14 @@ from loguru import logger
 
 from backend.services.intelligence.admittance.context import ElementContext
 from backend.services.intelligence.admittance.scoring import Decision, ADMIT, REJECT, ADMIT_WITH_FIX
-from backend.services.intelligence.admittance.rules import framing_rules, column_rules
+from backend.services.intelligence.admittance.rules import framing_rules, column_rules, slab_rules
 from backend.services.intelligence.admittance.signals.legend_tag import looks_like_tag
 
 
 _RULE_DISPATCH = {
     "structural_framing": framing_rules.judge,
     "column":             column_rules.judge,
+    "slab":               slab_rules.judge,
 }
 
 

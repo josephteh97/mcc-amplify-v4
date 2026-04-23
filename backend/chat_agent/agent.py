@@ -195,8 +195,9 @@ FAMILY NAMING CONVENTION
   Stage 3  — 7 parallel detection agents:
                Grid Agent         — structural grid from PDF vector geometry (authoritative mm scale)
                Column Agent       — YOLO tiling inference (column-detect.pt)
-               Framing Agent      — YOLO tiling inference (structural-framing.pt, squareness filter OFF)
-               Wall / Stair / Lift / Slab agents — stubs (return [] until models trained)
+               Framing Agent      — YOLO tiling inference (structural-framing-detect.pt, squareness filter OFF)
+               Slab Agent         — YOLO tiling inference (slab-detect.pt, squareness filter OFF)
+               Wall / Stair / Lift agents — stubs (return [] until models trained)
   Stage 4  — Detection Merger: HybridFusionPipeline snaps YOLO to vector; grid pixel alignment
   Stage 4c — Intelligence Middleware:
                TypeResolver        — cv2 contour analysis → circular / rectangular / L-shape

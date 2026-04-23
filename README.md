@@ -83,11 +83,12 @@ flowchart TB
                 COL["Column Agent
                 column-detect.pt  ✅"]
                 FRAME["Framing Agent
-                structural-framing.pt  ✅"]
+                structural-framing-detect.pt  ✅"]
                 WALL["Wall Agent  🚧"]
                 STAIR["Stairs Agent  🚧"]
                 LIFT["Lift Agent  🚧"]
-                SLAB["Slab Agent  🚧"]
+                SLAB["Slab Agent
+                slab-detect.pt  ✅"]
             end
         end
 
@@ -280,7 +281,7 @@ mcc-amplify-v4/
 |   |   |   └-- gltf_exporter.py       <- Writes .glb (Z-up to Y-up rotation)
 |   |   |-- corrections_logger.py      <- Logs human corrections for YOLO retraining
 |   |   └-- vision_comparator.py       <- Vision-based diff for Revit feedback
-|   |-- ml/weights/                     <- (user-supplied) place column-detect.pt and structural-framing.pt here; see Troubleshooting
+|   |-- ml/weights/                     <- (user-supplied) place column-detect.pt, structural-framing-detect.pt and slab-detect.pt here; see Troubleshooting
 |   └-- utils/
 |       |-- api_keys.py                <- Key resolution (env var -> .txt file)
 |       |-- file_handler.py            <- Upload file handling
@@ -491,7 +492,7 @@ Key behaviours:
 - Check the backend log: grid source and line count are logged at Stage 4.
 
 **YOLO weights not found**
-- Place the trained weights at `backend/ml/weights/column-detect.pt` and `backend/ml/weights/structural-framing.pt`.
+- Place the trained weights at `backend/ml/weights/column-detect.pt`, `backend/ml/weights/structural-framing-detect.pt`, and `backend/ml/weights/slab-detect.pt`.
 - The pipeline continues if either is missing — affected agents return empty detections and only vector geometry is used downstream for that element type.
 
 **Backend won't start**

@@ -8,10 +8,10 @@ Stages executed:
        GridDetectionAgent          — structural grid from vector geometry
        ColumnDetectionAgent        — YOLO tiling inference
        WallDetectionAgent          — vector path analysis (via fusion)
-       StructuralFramingDetectionAgent — stub, model pending
+       StructuralFramingDetectionAgent — YOLO tiling inference
+       SlabDetectionAgent          — YOLO tiling inference
        StairsDetectionAgent        — stub, model pending
        LiftDetectionAgent          — stub, model pending
-       SlabDetectionAgent          — stub, model pending
   4. Detection Merger     (HybridFusionPipeline + grid pixel alignment)
   4c. Intelligence layer  (TypeResolver → CrossElementValidator → ValidationAgent)
   5. BIM Enrichment       (BIMTranslatorEnricher + element deduplication)
@@ -99,15 +99,19 @@ class PipelineOrchestrator:
             load_yolo(weights / "column-detect.pt"), "column",
         )
         self.structural_framing_agent = YoloDetectionAgent(
-            load_yolo(weights / "structural-framing.pt"), "structural_framing",
+            load_yolo(weights / "structural-framing-detect.pt"), "structural_framing",
             min_squareness=0.0,   # beams are rectangular, not square
             max_side=300,
+        )
+        self.slab_agent = YoloDetectionAgent(
+            load_yolo(weights / "slab-detect.pt"), "slab",
+            min_squareness=0.0,   # slabs are rectangular, not square
+            max_side=2000,        # slabs can span large regions
         )
         # Untrained agents return [] until a model is available
         self.wall_agent  = UntrainedDetectionAgent("wall")    # walls extracted by fusion pipeline
         self.stairs_agent = UntrainedDetectionAgent("stairs")
         self.lift_agent   = UntrainedDetectionAgent("lift")
-        self.slab_agent   = UntrainedDetectionAgent("slab")
 
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -403,7 +407,16 @@ class PipelineOrchestrator:
                     f"wall_h={_profile.get('typical_wall_height_mm')}mm, "
                     f"storey={_profile.get('floor_to_floor_height_mm')}mm"
                 )
-            recipe = await self.geometry_gen.build(enriched_data, grid_info)
+            dpi = float(image_data.get("dpi", safe_dpi))
+            zone_labels_mm = [
+                (code, *self.geometry_gen.pt_to_world(x, y, grid_info, dpi))
+                for (code, x, y) in vector_data.get("zone_labels", [])
+            ]
+            recipe = await self.geometry_gen.build(
+                enriched_data, grid_info,
+                zone_labels_mm=zone_labels_mm,
+                slab_legend=vector_data.get("slab_legend") or {},
+            )
 
             # ── Stage 6.5: BIM Translator Enrichment ─────────────────────────
             if _column_dets:
@@ -756,7 +769,7 @@ class PipelineOrchestrator:
 
         Structural elements: column, wall, structural_framing, stairs, lift, slab.
         Rooms are retained as a fallback input for slab boundary generation
-        until SlabDetectionAgent produces direct slab detections.
+        when SlabDetectionAgent returns no detections.
         """
         output = {
             "walls":               [],

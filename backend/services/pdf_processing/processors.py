@@ -14,6 +14,10 @@ from backend.services.security.secure_renderer import (
     SecurityError,
     SecurePDFRenderer,
 )
+from backend.services.intelligence.slab_thickness_parser import (
+    extract_notes_legend,
+    locate_zone_labels,
+)
 
 # Reuse authoritative constants from the security layer
 MAX_PIXELS            = SecurePDFRenderer.MAX_PIXEL_COUNT
@@ -71,10 +75,19 @@ class VectorProcessor:
             # swap its axes when the PDF was exported in a rotated orientation.
             vector_data["page_rotation"] = page.rotation
 
+            # Share the words list so we parse the text layer once, not twice.
+            _words = page.get_text("words")
+            vector_data["slab_legend"] = extract_notes_legend(page, words=_words)
+            vector_data["zone_labels"] = locate_zone_labels(page, words=_words)
+
             logger.info(
                 f"Extracted {len(vector_data['paths'])} paths, "
                 f"{len(vector_data['text'])} text blocks, "
                 f"page {page.rect.width:.0f}×{page.rect.height:.0f} pt"
+            )
+            logger.info(
+                "Slab zones: {} legend entries, {} labels on plan",
+                len(vector_data["slab_legend"]), len(vector_data["zone_labels"]),
             )
             return vector_data
 
