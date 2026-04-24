@@ -56,7 +56,10 @@ from backend.services.detection_agents import (
 from backend.services.intelligence.type_resolver import resolve_types
 from backend.services.intelligence.cross_element_validator import validate_elements
 from backend.services.intelligence.validation_agent import enforce_rules, remove_outside_grid
-from backend.services.intelligence.debug_overlay import save_join_conflict_overlay
+from backend.services.intelligence.debug_overlay import (
+    save_join_conflict_overlay,
+    save_sanitizer_rejected_overlay,
+)
 from backend.services.intelligence.admittance import judge as admittance_judge
 from backend.services.intelligence.admittance import ElementContext, REJECT
 from backend.services.intelligence.admittance.legend_parser import parse_legend, enrich_with_vision
@@ -458,7 +461,7 @@ class PipelineOrchestrator:
             # Fix known geometry problems (beam-column overlaps, short beams,
             # undersized columns) before the recipe reaches the Windows machine.
             framing_before_sanitize = len(recipe.get("structural_framing", []))
-            recipe, sanitizer_actions = sanitize_recipe(recipe)
+            recipe, sanitizer_actions, sanitizer_rejected = sanitize_recipe(recipe)
             if sanitizer_actions:
                 framing_after_sanitize = len(recipe.get("structural_framing", []))
                 emit(observer.warn(job_id, "pre_export_sanitizer", {
@@ -467,6 +470,16 @@ class PipelineOrchestrator:
                     "framing_dropped": framing_before_sanitize - framing_after_sanitize,
                     "framing_kept":    framing_after_sanitize,
                 }))
+            if sanitizer_rejected:
+                try:
+                    save_sanitizer_rejected_overlay(
+                        image_data["image"],
+                        sanitizer_rejected,
+                        grid_info,
+                        f"data/debug/{job_id}_sanitizer_rejected.png",
+                    )
+                except Exception as exc:
+                    logger.warning("Sanitizer-rejection overlay failed: {}", exc)
 
             # ── Stage 7: BIM Export ────────────────────────────────────────────
             emit(observer.stage_started(job_id, 9, "BIM export (RVT + glTF)"))
