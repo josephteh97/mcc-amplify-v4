@@ -623,9 +623,7 @@ mcc-amplify-v4/
 |       |-- structural-framing-detect.pt <- YOLO beam (structural framing) weights
 |       +-- slab-detect.pt               <- YOLO slab weights
 |-- revit_server/RevitAddin/            <- C# Revit 2023 Add-in (build on Windows)
-|-- frontend/src/                       <- React + Three.js web UI
-+-- tests/
-    +-- test_intelligence_middleware.py  <- 7 tests for intelligence layer
++-- frontend/src/                       <- React + Three.js web UI
 ```
 
 ---
