@@ -36,6 +36,11 @@ _COL_MIN_MM:        float = float(os.getenv("COL_MIN_MM",        "200"))
 # either horizontal (dy≈0) or vertical (dx≈0). Allow small slop so near-colinear
 # columns (within this tolerance) still produce a valid beam.
 _AXIS_TOLERANCE_MM: float = float(os.getenv("AXIS_TOLERANCE_MM", "50"))
+# Secondary beams that frame into a primary beam (not a column) — if an endpoint
+# didn't snap to a column, try snapping it onto the centreline of a primary beam
+# that itself snapped to columns on both ends. Tighter than column snap because
+# a secondary's bbox end typically lands right on the primary's line.
+_BEAM_SNAP_MM:      float = float(os.getenv("BEAM_SNAP_MM",      "400"))
 
 
 def sanitize_recipe(recipe: dict) -> tuple[dict, list[str]]:
@@ -101,17 +106,23 @@ def _snap_and_filter_framing(
     centers: list[tuple[float, float, float, float]],
 ) -> tuple[dict, list[str], Counter]:
     """
-    Single pass over structural_framing. Snaps each endpoint within
-    (column half-width + _SNAP_BUFFER_MM) to the nearest column centre, trims
-    endpoints inward to the column face so the beam body doesn't clash into
-    the column, then rejects beams that fail any of:
-      - an endpoint didn't snap (floating / visible gap)
-      - both endpoints snapped to the same column
-      - post-snap axis is diagonal beyond _AXIS_TOLERANCE_MM (non-colinear columns)
-      - span < _MIN_BEAM_MM after face-trim (columns physically overlap / too close)
+    Three passes over structural_framing:
+      1. Column snap — each endpoint within (col_half + _SNAP_BUFFER_MM) of a
+         column centre is moved onto that centre.
+      2. Beam-to-beam snap — endpoints that didn't hit a column in pass 1 are
+         projected onto the nearest *primary* beam's centreline (primary = both
+         ends snapped to columns), within _BEAM_SNAP_MM. Recovers secondaries.
+      3. Validate + face-trim + dedup. Rejects beams that fail any of:
+           - an endpoint still floating after both snap passes
+           - both endpoints snapped to the same point
+           - post-snap axis diagonal beyond _AXIS_TOLERANCE_MM
+           - duplicate span — same endpoints as an earlier kept beam
+           - span < _MIN_BEAM_MM after column-face trim
+         Column-snapped ends are trimmed inward by the column half-dimension so
+         the beam body stops at the face; beam-snapped ends keep their projected
+         position (beam lands on the primary's centreline).
     """
     framing = recipe.get("structural_framing", [])
-    kept:    list[dict] = []
     actions: list[str]  = []
     drops:   Counter    = Counter()
     # Two YOLO detections between the same column pair snap to identical
@@ -122,30 +133,28 @@ def _snap_and_filter_framing(
     if not centers or not framing:
         return recipe, actions, drops
 
+    # --- Pass 1: column snap. Defer rejection so pass 2 can try beam-to-beam.
+    # For each beam we record which endpoints snapped to a column. `snapped[k]`
+    # is the column tuple (cx,cy,hw,hd); missing keys = still floating.
+    per_beam: list[dict] = []
     for i, beam in enumerate(framing):
-        snap_actions: list[str] = []
-        # Map endpoint key → the column it snapped to: (cx, cy, half_w, half_d).
         snapped: dict[str, tuple[float, float, float, float]] = {}
-
+        snap_actions: list[str] = []
         for pt_key in _ENDPOINT_KEYS:
             pt = beam.get(pt_key)
             if not isinstance(pt, dict):
                 continue
-
             px = float(pt.get("x", 0.0))
             py = float(pt.get("y", 0.0))
             best_col:  tuple[float, float, float, float] | None = None
             best_dist: float = float("inf")
-
             for cx, cy, hw, hd in centers:
-                # Fast axis pre-reject — skips the sqrt for distant columns
                 if abs(px - cx) > hw + _SNAP_BUFFER_MM or abs(py - cy) > hd + _SNAP_BUFFER_MM:
                     continue
                 d = _dist2d(px, py, cx, cy)
                 if d < best_dist:
                     best_dist = d
                     best_col  = (cx, cy, hw, hd)
-
             if best_col:
                 cx, cy, _, _ = best_col
                 pt["x"] = cx
@@ -155,26 +164,85 @@ def _snap_and_filter_framing(
                     f"framing[{i}].{pt_key} snapped to column @ "
                     f"({cx:.0f}, {cy:.0f}) mm  [was {best_dist:.0f} mm away]"
                 )
+        per_beam.append({"beam": beam, "snapped": snapped, "actions": snap_actions})
+
+    # --- Pass 2: beam-to-beam snap for endpoints that didn't find a column.
+    # Only snap onto beams whose *both* endpoints snapped to columns (primaries).
+    # Projection is perpendicular onto the primary's centreline, clamped to its
+    # span so a secondary can't extend past the primary.
+    primaries = [p for p in per_beam
+                 if "start_point" in p["snapped"] and "end_point" in p["snapped"]]
+
+    def _snap_to_primary(px: float, py: float) -> tuple[float, float, float] | None:
+        """Return (proj_x, proj_y, dist_mm) of the nearest primary centreline, or None."""
+        best: tuple[float, float, float] | None = None
+        best_d = _BEAM_SNAP_MM
+        for p in primaries:
+            b = p["beam"]
+            ax, ay = b["start_point"]["x"], b["start_point"]["y"]
+            bx, by = b["end_point"]["x"],   b["end_point"]["y"]
+            vx, vy = bx - ax, by - ay
+            L2 = vx * vx + vy * vy
+            if L2 < 1.0:
+                continue
+            t = ((px - ax) * vx + (py - ay) * vy) / L2
+            t = max(0.0, min(1.0, t))
+            qx = ax + t * vx
+            qy = ay + t * vy
+            d = math.hypot(px - qx, py - qy)
+            if d < best_d:
+                best_d = d
+                best = (qx, qy, d)
+        return best
+
+    for i, entry in enumerate(per_beam):
+        beam = entry["beam"]
+        snapped = entry["snapped"]
+        for pt_key in _ENDPOINT_KEYS:
+            if pt_key in snapped:
+                continue
+            pt = beam.get(pt_key)
+            if not isinstance(pt, dict):
+                continue
+            hit = _snap_to_primary(float(pt["x"]), float(pt["y"]))
+            if hit is None:
+                continue
+            qx, qy, d = hit
+            pt["x"] = qx
+            pt["y"] = qy
+            # Sentinel: half_w=half_d=0 means "snapped to beam, don't face-trim".
+            snapped[pt_key] = (qx, qy, 0.0, 0.0)
+            entry["actions"].append(
+                f"framing[{i}].{pt_key} snapped to primary beam centreline @ "
+                f"({qx:.0f}, {qy:.0f}) mm  [was {d:.0f} mm away]"
+            )
+
+    # --- Pass 3: validation, dedup, face-trim, keep list.
+    kept: list[dict] = []
+    for i, entry in enumerate(per_beam):
+        beam = entry["beam"]
+        snapped = entry["snapped"]
+        snap_actions = entry["actions"]
 
         missing = [k for k in _ENDPOINT_KEYS if k not in snapped]
         if missing:
             _reject(actions, i,
-                f"{', '.join(missing)} not within {_SNAP_BUFFER_MM:.0f} mm "
-                f"of any column (would float in model)",
+                f"{', '.join(missing)} not within {_SNAP_BUFFER_MM:.0f} mm of any column "
+                f"nor {_BEAM_SNAP_MM:.0f} mm of any primary beam (would float in model)",
                 "floating_endpoint", drops)
             continue
 
         sp_col = snapped["start_point"]
         ep_col = snapped["end_point"]
         if sp_col[0] == ep_col[0] and sp_col[1] == ep_col[1]:
-            _reject(actions, i, "both endpoints snapped to the same column",
+            _reject(actions, i, "both endpoints snapped to the same column/beam point",
                 "same_column", drops)
             continue
 
         pair_key = frozenset({(sp_col[0], sp_col[1]), (ep_col[0], ep_col[1])})
         if pair_key in seen_pairs:
             _reject(actions, i,
-                "duplicate span — another beam already snapped to the same column pair",
+                "duplicate span — another beam already snapped to the same endpoints",
                 "duplicate_span", drops)
             continue
         seen_pairs.add(pair_key)
@@ -186,41 +254,40 @@ def _snap_and_filter_framing(
         if min(abs(dx), abs(dy)) > _AXIS_TOLERANCE_MM:
             _reject(actions, i,
                 f"diagonal beam after snap (dx={dx:.0f}mm, dy={dy:.0f}mm > "
-                f"tolerance {_AXIS_TOLERANCE_MM:.0f}mm); endpoint columns are not colinear",
+                f"tolerance {_AXIS_TOLERANCE_MM:.0f}mm); endpoints are not colinear",
                 "diagonal", drops)
             continue
 
-        # Trim endpoints from column centre → column face along the beam axis,
-        # so the beam body ends flush with the column face instead of extruding
-        # half-column-width into the column body.
+        # Face-trim only where the endpoint snapped to a column (half_w/half_d > 0).
+        # Beam-to-beam endpoints keep their projected position (beam lands on the
+        # primary's centreline — no face offset needed).
         axis_is_x = abs(dx) >= abs(dy)
         if axis_is_x:
-            sp_half = sp_col[2]   # start column's half-width
+            sp_half = sp_col[2]
             ep_half = ep_col[2]
             direction = 1.0 if dx > 0 else -1.0
             sp["x"] += direction * sp_half
             ep["x"] -= direction * ep_half
         else:
-            sp_half = sp_col[3]   # start column's half-depth
+            sp_half = sp_col[3]
             ep_half = ep_col[3]
             direction = 1.0 if dy > 0 else -1.0
             sp["y"] += direction * sp_half
             ep["y"] -= direction * ep_half
 
         length = math.hypot(ep["x"] - sp["x"], ep["y"] - sp["y"])
-        # If trim overshoots (columns physically overlap along beam axis) the
-        # primary-axis delta flips sign — catch via post-trim length < min.
         if length < _MIN_BEAM_MM:
             _reject(actions, i,
-                f"span {length:.0f} mm after column-face trim < minimum "
-                f"{_MIN_BEAM_MM:.0f} mm (columns too close along beam axis)",
+                f"span {length:.0f} mm after face trim < minimum "
+                f"{_MIN_BEAM_MM:.0f} mm (endpoints too close along beam axis)",
                 "too_short", drops)
             continue
 
-        snap_actions.append(
-            f"framing[{i}] trimmed to column faces "
-            f"(−{sp_half:.0f} mm start, −{ep_half:.0f} mm end)"
-        )
+        if sp_half or ep_half:
+            snap_actions.append(
+                f"framing[{i}] trimmed to column faces "
+                f"(−{sp_half:.0f} mm start, −{ep_half:.0f} mm end)"
+            )
 
         kept.append(beam)
         actions.extend(snap_actions)
