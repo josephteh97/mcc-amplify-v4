@@ -70,14 +70,12 @@ class TestBuildStructuralFramingParameters:
         dx = abs(e["x"] - s["x"])
         assert dy > dx, "Vertical beam should span in Y"
 
-    def test_z_at_beam_centroid(self, gen):
-        """Insertion Z is the beam centroid so the Add-in's Z_JUSTIFICATION=
-        Center lands the beam TOP flush with the ground-slab top."""
+    def test_z_at_beam_top(self, gen):
+        """Insertion Z is the beam TOP elevation = Level0 + slab_thickness,
+        flush with the ground-slab top surface."""
         beams = [_make_beam(0, 100, 290, 900, 310)]
         result = gen._build_structural_framing_parameters(beams, _GRID, _LEVEL0_ELEV)
-        expected_z = (
-            _LEVEL0_ELEV + gen.default_floor_thickness - gen.default_beam_depth / 2.0
-        )
+        expected_z = _LEVEL0_ELEV + gen.default_floor_thickness
         assert result[0]["start_point"]["z"] == pytest.approx(expected_z)
         assert result[0]["end_point"]["z"]   == pytest.approx(expected_z)
         assert result[0]["level"] == "Level 0"

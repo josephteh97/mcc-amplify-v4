@@ -654,14 +654,20 @@ class GeometryGenerator:
         bbox short side (it's a drafting-line thickness, not a structural size,
         and produces hallucinated type names like "1050x800mm").
 
-        Z convention: beams are referenced to **Level 0** (ground datum at
-        elevation 0). The beam TOP is flush with the ground-slab top
-        (z = +slab_thickness) — standard structural datum where the slab
-        pours down onto the beam top. The beam body hangs BELOW Level 0
-        into the foundation zone. The insertion line is placed at the
-        beam CENTROID elevation; the Add-in sets Z_JUSTIFICATION=Center,
-        which every family honours (Top/Bottom are fragile without
-        dedicated reference planes).
+        Z convention: the insertion Z is the beam TOP elevation (NOT the
+        centroid). Columns and slab both sit on Level 0 (z=0); the slab
+        spans 0 → +slab_thickness, and the beam TOP is flush with the slab
+        top at +slab_thickness. The beam body hangs depth_mm downward
+        from there into the foundation zone below Level 0.
+
+            z_mm = Level0 + slab_thickness     # = beam top elevation
+
+        Empirical note: the Add-in leaves Z_JUSTIFICATION=Center (1), but
+        for the project's RC framing family the insertion curve actually
+        lands at the beam TOP in the rendered model — the family's
+        internal reference plane is top-referenced. If the family is ever
+        swapped (e.g. for steel), re-verify that this still holds and
+        adjust either this formula or the Z_JUSTIFICATION value.
 
         The slab_thickness used per-beam is the resolved zone thickness
         from NSP/CIS codes parsed off the drawing's NOTES/legend (see
@@ -696,7 +702,7 @@ class GeometryGenerator:
             depth_mm = float(metadata.get("section_depth_mm") or self.default_beam_depth)
 
             slab_thickness = self._beam_slab_thickness(mid_x, mid_y, slab_regions)
-            z_mm = level0_elev + slab_thickness - depth_mm / 2.0
+            z_mm = level0_elev + slab_thickness
 
             if dx >= dy:
                 start = {"x": min(x1_mm, x2_mm), "y": mid_y, "z": z_mm}
