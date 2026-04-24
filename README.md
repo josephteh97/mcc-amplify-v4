@@ -8,7 +8,7 @@ AI-powered system that converts PDF floor plans into native Revit (`.RVT`) BIM m
 
 Upload a PDF architectural floor plan and receive a fully-formed, editable Revit file. No manual re-drawing, no IFC round-trips. The system:
 
-1. Runs **6 ML detection agents** (column, structural framing, stairs, lift, wall, slab) **in parallel with an algorithmic `GridDetector`** — the latter derives the real-world coordinate scale directly from PDF vector text (grid labels + dimension annotations), not from a model. Scale text (e.g. "1:100") is intentionally ignored as unreliable.
+1. Runs **7 ML detection agents** (column, structural framing, core wall, stairs, lift, wall, slab) **in parallel with an algorithmic `GridDetector`** — the latter derives the real-world coordinate scale directly from PDF vector text (grid labels + dimension annotations), not from a model. Scale text (e.g. "1:100") is intentionally ignored as unreliable.
 2. Merges all agent outputs, snaps detections to the PDF vector geometry, and resolves pixel coordinates into real-world mm using the detected grid.
 3. Runs an **intelligence middleware layer** — type resolution (circular/rectangular/L-shape via cv2 contour analysis), cross-element validation (IoU overlap, grid distance, isolation checks), and DfMA rule enforcement (SS CP 65). Suspicious elements are flagged for the Edit Panel; beams whose placement would trigger Revit join conflicts are excluded from the recipe.
 4. Enriches the Revit recipe with intelligence metadata (resolved type, validation flags, DfMA compliance status) then deduplicates elements that snapped to the same grid intersection.
