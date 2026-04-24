@@ -450,6 +450,7 @@ class PipelineOrchestrator:
             emit(observer.stage_completed(job_id, 8, {
                 "columns":            len(recipe.get("columns", [])),
                 "walls":              len(recipe.get("walls", [])),
+                "core_walls":         len(recipe.get("core_walls", [])),
                 "structural_framing": len(recipe.get("structural_framing", [])),
                 "stairs":             len(recipe.get("stairs", [])),
                 "lifts":              len(recipe.get("lifts", [])),
