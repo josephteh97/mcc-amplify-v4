@@ -56,7 +56,6 @@ from backend.services.detection_agents import (
 from backend.services.intelligence.type_resolver import resolve_types
 from backend.services.intelligence.cross_element_validator import validate_elements
 from backend.services.intelligence.validation_agent import enforce_rules, remove_outside_grid
-from backend.services.intelligence.dashline_validator import validate_framing_dashlines
 from backend.services.intelligence.debug_overlay import (
     save_join_conflict_overlay,
     save_sanitizer_rejected_overlay,
@@ -256,27 +255,6 @@ class PipelineOrchestrator:
                 (fused_data.get("refined_px") or col_dets)
                 + wall_dets + sf_dets + stair_dets + lift_dets + slab_dets
             )
-
-            # Confirm each YOLO framing detection against a PDF dashed line.
-            # The dashed line is the source of truth for the beam's span; a
-            # detection without dash evidence is dropped.
-            framing_for_dash = [d for d in refined_detections if d.get("type") == "structural_framing"]
-            if framing_for_dash:
-                kept_framing, dashless = validate_framing_dashlines(
-                    framing_for_dash,
-                    vector_data,
-                    float(image_data.get("dpi", safe_dpi)),
-                    grid_info,
-                )
-                if dashless:
-                    refined_detections = _drop_by_id(
-                        refined_detections, {id(d) for d in dashless}
-                    )
-                    emit(observer.warn(job_id, "dashline_unmatched_framing", {
-                        "count": len(dashless),
-                        "kept":  len(kept_framing),
-                    }))
-
             emit(observer.stage_completed(job_id, 4, {"refined_count": len(refined_detections)}))
 
             # ── Stage 4b: Align grid pixel reference to column centres ─────────
