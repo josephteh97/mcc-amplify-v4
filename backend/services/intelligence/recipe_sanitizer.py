@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import os
+from collections import Counter
 from loguru import logger
 
 _MIN_BEAM_MM:       float = float(os.getenv("MIN_BEAM_MM",       "500"))
@@ -45,7 +46,8 @@ def sanitize_recipe(recipe: dict) -> tuple[dict, list[str]]:
     """
     col_boxes = _col_centers(recipe)
 
-    recipe, a1 = _snap_and_filter_framing(recipe, col_boxes)
+    framing_in = len(recipe.get("structural_framing", []))
+    recipe, a1, drop_reasons = _snap_and_filter_framing(recipe, col_boxes)
     recipe, a2 = _clamp_column_min_size(recipe)
 
     actions = a1 + a2
@@ -55,6 +57,15 @@ def sanitize_recipe(recipe: dict) -> tuple[dict, list[str]]:
             logger.debug("  • {}", a)
     else:
         logger.debug("RecipeSanitizer: recipe clean — no pre-export fixes needed")
+
+    if drop_reasons:
+        framing_kept = len(recipe.get("structural_framing", []))
+        dropped = sum(drop_reasons.values())
+        logger.warning(
+            "RecipeSanitizer: {} of {} framing beam(s) dropped ({} kept) — reasons: {}",
+            dropped, framing_in, framing_kept,
+            ", ".join(f"{reason}={count}" for reason, count in drop_reasons.most_common()),
+        )
 
     return recipe, actions
 
@@ -80,14 +91,15 @@ def _dist2d(x1: float, y1: float, x2: float, y2: float) -> float:
 _ENDPOINT_KEYS = ("start_point", "end_point")
 
 
-def _reject(actions: list[str], index: int, reason: str) -> None:
+def _reject(actions: list[str], index: int, reason: str, tag: str, counts: Counter) -> None:
     actions.append(f"framing[{index}] removed — {reason}")
+    counts[tag] += 1
 
 
 def _snap_and_filter_framing(
     recipe: dict,
     centers: list[tuple[float, float, float, float]],
-) -> tuple[dict, list[str]]:
+) -> tuple[dict, list[str], Counter]:
     """
     Single pass over structural_framing. Snaps each endpoint within
     (column half-width + _SNAP_BUFFER_MM) to the nearest column centre, trims
@@ -101,13 +113,14 @@ def _snap_and_filter_framing(
     framing = recipe.get("structural_framing", [])
     kept:    list[dict] = []
     actions: list[str]  = []
+    drops:   Counter    = Counter()
     # Two YOLO detections between the same column pair snap to identical
     # endpoints and produce Revit's "identical instances in the same place"
     # warning. Key is the unordered snapped-column pair.
     seen_pairs: set[frozenset[tuple[float, float]]] = set()
 
     if not centers or not framing:
-        return recipe, actions
+        return recipe, actions, drops
 
     for i, beam in enumerate(framing):
         snap_actions: list[str] = []
@@ -147,19 +160,22 @@ def _snap_and_filter_framing(
         if missing:
             _reject(actions, i,
                 f"{', '.join(missing)} not within {_SNAP_BUFFER_MM:.0f} mm "
-                f"of any column (would float in model)")
+                f"of any column (would float in model)",
+                "floating_endpoint", drops)
             continue
 
         sp_col = snapped["start_point"]
         ep_col = snapped["end_point"]
         if sp_col[0] == ep_col[0] and sp_col[1] == ep_col[1]:
-            _reject(actions, i, "both endpoints snapped to the same column")
+            _reject(actions, i, "both endpoints snapped to the same column",
+                "same_column", drops)
             continue
 
         pair_key = frozenset({(sp_col[0], sp_col[1]), (ep_col[0], ep_col[1])})
         if pair_key in seen_pairs:
             _reject(actions, i,
-                "duplicate span — another beam already snapped to the same column pair")
+                "duplicate span — another beam already snapped to the same column pair",
+                "duplicate_span", drops)
             continue
         seen_pairs.add(pair_key)
 
@@ -170,7 +186,8 @@ def _snap_and_filter_framing(
         if min(abs(dx), abs(dy)) > _AXIS_TOLERANCE_MM:
             _reject(actions, i,
                 f"diagonal beam after snap (dx={dx:.0f}mm, dy={dy:.0f}mm > "
-                f"tolerance {_AXIS_TOLERANCE_MM:.0f}mm); endpoint columns are not colinear")
+                f"tolerance {_AXIS_TOLERANCE_MM:.0f}mm); endpoint columns are not colinear",
+                "diagonal", drops)
             continue
 
         # Trim endpoints from column centre → column face along the beam axis,
@@ -196,7 +213,8 @@ def _snap_and_filter_framing(
         if length < _MIN_BEAM_MM:
             _reject(actions, i,
                 f"span {length:.0f} mm after column-face trim < minimum "
-                f"{_MIN_BEAM_MM:.0f} mm (columns too close along beam axis)")
+                f"{_MIN_BEAM_MM:.0f} mm (columns too close along beam axis)",
+                "too_short", drops)
             continue
 
         snap_actions.append(
@@ -208,7 +226,7 @@ def _snap_and_filter_framing(
         actions.extend(snap_actions)
 
     recipe["structural_framing"] = kept
-    return recipe, actions
+    return recipe, actions, drops
 
 
 def _clamp_column_min_size(recipe: dict) -> tuple[dict, list[str]]:

@@ -457,11 +457,15 @@ class PipelineOrchestrator:
             # ── Pre-export sanitizer ───────────────────────────────────────────
             # Fix known geometry problems (beam-column overlaps, short beams,
             # undersized columns) before the recipe reaches the Windows machine.
+            framing_before_sanitize = len(recipe.get("structural_framing", []))
             recipe, sanitizer_actions = sanitize_recipe(recipe)
             if sanitizer_actions:
+                framing_after_sanitize = len(recipe.get("structural_framing", []))
                 emit(observer.warn(job_id, "pre_export_sanitizer", {
                     "count":   len(sanitizer_actions),
                     "actions": sanitizer_actions,
+                    "framing_dropped": framing_before_sanitize - framing_after_sanitize,
+                    "framing_kept":    framing_after_sanitize,
                 }))
 
             # ── Stage 7: BIM Export ────────────────────────────────────────────
