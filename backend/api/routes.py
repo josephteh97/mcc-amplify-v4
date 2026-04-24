@@ -575,7 +575,7 @@ async def get_revit_families():
     Return available Revit families cached from the last successful build.
     Returns empty lists if no build has been completed yet.
     """
-    families_path = Path("data/revit_families.json")
+    families_path = Path(__file__).resolve().parents[2] / "data" / "revit_families.json"
     if families_path.exists():
         with open(families_path) as f:
             return json.load(f)

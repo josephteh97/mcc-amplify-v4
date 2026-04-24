@@ -223,15 +223,27 @@ class RevitClient:
                 if raw_fam:
                     try:
                         families = _json.loads(raw_fam)
-                        fam_path = Path("data/revit_families.json")
-                        fam_path.parent.mkdir(parents=True, exist_ok=True)
-                        with open(fam_path, "w") as fj:
-                            _json.dump(families, fj, indent=2)
                         col_count = len(families.get("structural_columns", []))
-                        logger.info(
-                            f"Revit family manifest cached: "
-                            f"{col_count} column type(s) available."
-                        )
+                        fam_path = Path(__file__).resolve().parents[2] / "data" / "revit_families.json"
+                        fam_path.parent.mkdir(parents=True, exist_ok=True)
+                        # Refuse to clobber a previously-good manifest with an empty
+                        # one — the Revit Add-in returns `{}` when its family scan
+                        # runs against a doc with nothing loaded, and we'd rather
+                        # keep the last-known-good list than serve empty to the UI.
+                        if col_count == 0 and fam_path.exists():
+                            logger.warning(
+                                "Revit Add-in returned empty family manifest — keeping "
+                                "cached manifest at {} (check Revit template / family library on the server).",
+                                fam_path,
+                            )
+                        else:
+                            with open(fam_path, "w") as fj:
+                                _json.dump(families, fj, indent=2)
+                            level = logger.warning if col_count == 0 else logger.info
+                            level(
+                                "Revit family manifest cached at {}: {} column type(s) available.",
+                                fam_path, col_count,
+                            )
                     except Exception as fex:
                         logger.debug(f"Family manifest parse failed: {fex}")
 
