@@ -38,11 +38,11 @@ class GridDetectionAgent:
         except GridDimensionMissingError:
             raise
         except Exception as exc:
-            logger.warning(f"GridAgent: detection failed ({exc}) — using fallback grid")
+            logger.warning(f"GridDetector: detection failed ({exc}) — using fallback grid")
             return self._detector._fallback_grid(ctx.image.shape[1], ctx.image.shape[0])
 
         logger.info(
-            "GridAgent: {} V-lines × {} H-lines  source={}  confidence={:.2f}",
+            "GridDetector: {} V-lines × {} H-lines  source={}  confidence={:.2f}",
             len(grid_info.get("x_lines_px", [])),
             len(grid_info.get("y_lines_px", [])),
             grid_info.get("source", "unknown"),
