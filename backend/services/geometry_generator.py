@@ -267,6 +267,7 @@ class GeometryGenerator:
                                       enriched_data.get("columns", []), grid_info),
             "walls":              self._build_wall_parameters(
                                       enriched_data.get("walls", []), grid_info),
+            "core_walls":         list(enriched_data.get("core_walls", [])),
             "structural_framing": self._build_structural_framing_parameters(
                                       enriched_data.get("structural_framing", []),
                                       grid_info, level0_elev,
@@ -284,6 +285,7 @@ class GeometryGenerator:
             f"Generated: {len(geometry['columns'])} columns, "
             f"{len(geometry['structural_framing'])} framing, "
             f"{len(geometry['walls'])} walls, "
+            f"{len(geometry['core_walls'])} core walls, "
             f"{len(geometry['stairs'])} stairs, "
             f"{len(geometry['lifts'])} lifts, "
             f"{len(geometry['slabs'])} slabs, "
