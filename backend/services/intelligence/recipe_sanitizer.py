@@ -101,6 +101,10 @@ def _snap_and_filter_framing(
     framing = recipe.get("structural_framing", [])
     kept:    list[dict] = []
     actions: list[str]  = []
+    # Two YOLO detections between the same column pair snap to identical
+    # endpoints and produce Revit's "identical instances in the same place"
+    # warning. Key is the unordered snapped-column pair.
+    seen_pairs: set[frozenset[tuple[float, float]]] = set()
 
     if not centers or not framing:
         return recipe, actions
@@ -151,6 +155,13 @@ def _snap_and_filter_framing(
         if sp_col[0] == ep_col[0] and sp_col[1] == ep_col[1]:
             _reject(actions, i, "both endpoints snapped to the same column")
             continue
+
+        pair_key = frozenset({(sp_col[0], sp_col[1]), (ep_col[0], ep_col[1])})
+        if pair_key in seen_pairs:
+            _reject(actions, i,
+                "duplicate span — another beam already snapped to the same column pair")
+            continue
+        seen_pairs.add(pair_key)
 
         sp, ep = beam["start_point"], beam["end_point"]
         dx = ep["x"] - sp["x"]
