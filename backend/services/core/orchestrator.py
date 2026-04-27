@@ -330,7 +330,7 @@ class PipelineOrchestrator:
                 page_height_pt=page_rect[3] - page_rect[1],
                 dpi=float(image_data.get("dpi", safe_dpi)),
             )
-            admittance_judge(all_dets, ctx)
+            # admittance_judge(all_dets, ctx)
 
             if raster is not None:
                 save_join_conflict_overlay(
