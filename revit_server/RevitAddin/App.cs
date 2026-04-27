@@ -3268,11 +3268,13 @@ namespace RevitModelBuilderAddin
         ///      curve Z. For the project's RC framing family, the top-
         ///      referenced internal origin means Z_JUSTIFICATION=Center
         ///      empirically lands the curve at the beam top, producing:
-        ///      beam top sitting on the Level 0 line with the slab resting
-        ///      on top of the beam and the body hanging depth_mm below
-        ///      into the foundation zone. If the family is swapped (e.g.
-        ///      steel), re-verify this behavior — Top/Bottom modes depend
-        ///      on explicit reference planes in the RFA and may be fragile.
+        ///      beam top sitting on the Level 0 line, flush with the slab
+        ///      top (slabs are placed with elevation=0 and Floor.Create
+        ///      extrudes the body downward), with the beam body hanging
+        ///      depth_mm below into the foundation zone. If the family is
+        ///      swapped (e.g. steel), re-verify this behavior — Top/Bottom
+        ///      modes depend on explicit reference planes in the RFA and
+        ///      may be fragile.
         /// </summary>
         private static void ApplyRCFramingPlacementDefaults(FamilyInstance inst)
         {

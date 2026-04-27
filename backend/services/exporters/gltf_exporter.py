@@ -166,7 +166,14 @@ class GltfExporter:
             return None
 
     def _slab_mesh(self, slab: dict):
-        """Floor or ceiling slab — flat box from boundary bounding rect."""
+        """Floor or ceiling slab — flat box from boundary bounding rect.
+
+        Convention: `elevation` is the slab TOP elevation (matches Revit's
+        Floor.Create default, which extrudes the body downward from the
+        boundary). The mesh therefore centres at elevation - thickness/2 so
+        the preview shows the slab top flush with Level 0 (and flush with
+        the beam top), body hanging into the foundation zone below.
+        """
         try:
             pts = slab.get("boundary_points", [])
             if len(pts) < 3:
@@ -182,7 +189,7 @@ class GltfExporter:
             thickness = float(slab.get("thickness", 200))
             elevation = float(slab.get("elevation", 0))
             mesh = trimesh.creation.box(extents=[w, d, thickness])
-            T = trimesh.transformations.translation_matrix([cx, cy, elevation + thickness / 2])
+            T = trimesh.transformations.translation_matrix([cx, cy, elevation - thickness / 2])
             mesh.apply_transform(T)
             return mesh
         except Exception as exc:

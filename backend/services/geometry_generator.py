@@ -657,10 +657,10 @@ class GeometryGenerator:
         and produces hallucinated type names like "1050x800mm").
 
         Z convention: the insertion Z is the beam TOP elevation (NOT the
-        centroid). The beam top sits exactly on the Level 0 line; the slab
-        rests on top of the beam (slab spans Level 0 → +slab_thickness),
-        and the beam body hangs depth_mm downward into the foundation
-        zone below Level 0.
+        centroid). The beam top AND the slab top both sit exactly on the
+        Level 0 line — the two are flush. Both bodies hang downward from
+        Level 0: the beam by depth_mm, the slab by slab_thickness, into
+        the foundation zone below.
 
             z_mm = Level0     # = beam top elevation, on the Level 0 line
 
@@ -752,6 +752,11 @@ class GeometryGenerator:
         Each detected slab bbox becomes a flat boundary polygon. Thickness is
         resolved from a containing zone label (if any) via NOTES legend or a
         self-describing code; otherwise falls back to default_floor_thickness.
+
+        Z convention: `elevation = 0.0` means the slab TOP sits on the
+        Level 0 line — flush with the beam top. Revit's Floor.Create
+        extrudes the body downward from the boundary curve, so the slab
+        body hangs slab_thickness below Level 0 into the foundation zone.
         """
         params: List[Dict] = []
         for i, slab in enumerate(slabs_2d):
