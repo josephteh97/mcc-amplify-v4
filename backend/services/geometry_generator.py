@@ -657,12 +657,12 @@ class GeometryGenerator:
         and produces hallucinated type names like "1050x800mm").
 
         Z convention: the insertion Z is the beam TOP elevation (NOT the
-        centroid). Columns and slab both sit on Level 0 (z=0); the slab
-        spans 0 → +slab_thickness, and the beam TOP is flush with the slab
-        top at +slab_thickness. The beam body hangs depth_mm downward
-        from there into the foundation zone below Level 0.
+        centroid). The beam top sits exactly on the Level 0 line; the slab
+        rests on top of the beam (slab spans Level 0 → +slab_thickness),
+        and the beam body hangs depth_mm downward into the foundation
+        zone below Level 0.
 
-            z_mm = Level0 + slab_thickness     # = beam top elevation
+            z_mm = Level0     # = beam top elevation, on the Level 0 line
 
         Empirical note: the Add-in leaves Z_JUSTIFICATION=Center (1), but
         for the project's RC framing family the insertion curve actually
@@ -670,12 +670,6 @@ class GeometryGenerator:
         internal reference plane is top-referenced. If the family is ever
         swapped (e.g. for steel), re-verify that this still holds and
         adjust either this formula or the Z_JUSTIFICATION value.
-
-        The slab_thickness used per-beam is the resolved zone thickness
-        from NSP/CIS codes parsed off the drawing's NOTES/legend (see
-        `_beam_slab_thickness`); `default_floor_thickness` (200 mm) is the
-        fallback when the beam midpoint doesn't land in any annotated zone
-        or the parser couldn't read a code for it.
         """
         params: List[Dict] = []
 
@@ -704,7 +698,7 @@ class GeometryGenerator:
             depth_mm = float(metadata.get("section_depth_mm") or self.default_beam_depth)
 
             slab_thickness = self._beam_slab_thickness(mid_x, mid_y, slab_regions)
-            z_mm = level0_elev + slab_thickness
+            z_mm = level0_elev      # beam top level is right at Level 0 elevation
 
             if dx >= dy:
                 start = {"x": min(x1_mm, x2_mm), "y": mid_y, "z": z_mm}

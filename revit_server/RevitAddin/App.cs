@@ -3264,15 +3264,15 @@ namespace RevitModelBuilderAddin
         ///      already trimmed the centerline to column faces; any non-zero
         ///      extension would push the body back into the column.
         ///   2. Z_JUSTIFICATION = Center (1) — the recipe passes the beam
-        ///      TOP elevation (Level0 + slab_thickness, referenced to
-        ///      Level 0 / ground datum) as the insertion curve Z. For the
-        ///      project's RC framing family, the top-referenced internal
-        ///      origin means Z_JUSTIFICATION=Center empirically lands the
-        ///      curve at the beam top, producing: beam top flush with
-        ///      slab top, body hanging depth_mm below into the foundation
-        ///      zone. If the family is swapped (e.g. steel), re-verify
-        ///      this behavior — Top/Bottom modes depend on explicit
-        ///      reference planes in the RFA and may be fragile.
+        ///      TOP elevation (Level 0 / ground datum) as the insertion
+        ///      curve Z. For the project's RC framing family, the top-
+        ///      referenced internal origin means Z_JUSTIFICATION=Center
+        ///      empirically lands the curve at the beam top, producing:
+        ///      beam top sitting on the Level 0 line with the slab resting
+        ///      on top of the beam and the body hanging depth_mm below
+        ///      into the foundation zone. If the family is swapped (e.g.
+        ///      steel), re-verify this behavior — Top/Bottom modes depend
+        ///      on explicit reference planes in the RFA and may be fragile.
         /// </summary>
         private static void ApplyRCFramingPlacementDefaults(FamilyInstance inst)
         {
