@@ -201,7 +201,7 @@ class GltfExporter:
         try:
             width = float(beam.get("width", 200))
             depth = float(beam.get("depth", 800))
-            z     = float(beam["start_point"].get("z", 2800))
+            z     = float(beam["start_point"].get("z", 0.0))
             return self._axis_box_mesh(
                 beam["start_point"], beam["end_point"],
                 width, depth, z - depth / 2,

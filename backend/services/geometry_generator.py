@@ -251,8 +251,9 @@ class GeometryGenerator:
         levels = self._build_default_levels(enriched_data)
         level0_elev = level_elevation(levels, "Level 0", 0.0)
 
-        # Build slabs first so structural_framing can resolve per-beam Z by
-        # testing the beam midpoint against each slab's polygon.
+        # Build slabs first so structural_framing can attach the per-beam
+        # OCR'd slab thickness (resolved from NSP/CIS zone codes) onto each
+        # beam recipe entry.
         slabs_built = self._build_slab_parameters(
             enriched_data.get("slabs", []), grid_info,
             zone_labels_mm=zone_labels_mm, slab_legend=slab_legend,
@@ -662,6 +663,11 @@ class GeometryGenerator:
         Level 0: the beam by depth_mm, the slab by slab_thickness, into
         the foundation zone below.
 
+        The per-beam slab_thickness (resolved by `_beam_slab_thickness`
+        from OCR'd NSP/CIS zone codes via point-in-polygon against the
+        slab regions) is attached to each beam entry as metadata for
+        downstream consumers.
+
             z_mm = Level0     # = beam top elevation, on the Level 0 line
 
         Empirical note: the Add-in leaves Z_JUSTIFICATION=Center (1), but
@@ -727,6 +733,7 @@ class GeometryGenerator:
                 "depth":       round(depth_mm, 1),
                 "level":       "Level 0",
                 "family_type": f"{family_prefix}{int(max_dim)}x{int(min_dim)}mm",
+                "slab_thickness": round(slab_thickness, 1),
             }
             if material:
                 entry["material"] = material
@@ -817,7 +824,12 @@ class GeometryGenerator:
         slab_regions: Optional[List[Dict]],
     ) -> float:
         """Return thickness of the first slab region containing (mid_x, mid_y),
-        or the uniform default when no region matches."""
+        or the uniform default when no region matches.
+
+        Slab regions carry per-zone thicknesses parsed from the drawing's
+        OCR'd NSP/CIS legend codes (see `_resolve_slab_thickness`); this
+        lookup lets each beam carry the thickness of the slab above it.
+        """
         if not slab_regions:
             return float(self.default_floor_thickness)
         for slab in slab_regions:

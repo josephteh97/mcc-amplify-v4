@@ -173,31 +173,83 @@ def _find_notes_blocks(
 
 
 def _parse_block_legend(block_words: list[tuple], legend: dict[str, float]) -> None:
-    """Populate *legend* with entries parsed from one NOTES block's words."""
-    lines: dict[tuple[int, int], list[tuple]] = {}
-    for w in block_words:
-        lines.setdefault((w[5], w[6]), []).append(w)
+    """Populate *legend* with entries parsed from one NOTES block's words.
 
-    # Pass (a): NSP\d+ codes paired with an integer on the same line.
-    for line_words in lines.values():
-        nsp_tokens = [w for w in line_words if _LOOKUP_RE.match((w[4] or "").strip())]
+    A clause's total slab thickness is the SUM of every in-range integer
+    in that clause, so notes that combine an RC slab with a topping
+    (e.g. "ALL NSP2 SHALL BE 130 THK + TOPPING 120 THK" → 250 mm) yield
+    the full structural depth rather than just the RC layer.
+
+    Clauses are split on "ALL" (each numbered note starts with "ALL") and
+    on comma-terminated tokens, so a single numbered note that declares
+    two zones on one wrapped line — "ALL NSP2 ... 130 + TOPPING 120, ALL
+    NSP5 ... 150 + TOPPING 200." — partitions cleanly into NSP2=250 and
+    NSP5=350 instead of one polluted sum.
+    """
+    for clause in _split_clauses(block_words):
+        nsp_tokens = [w for w in clause if _LOOKUP_RE.match((w[4] or "").strip())]
         if not nsp_tokens:
             continue
-        for w in line_words:
+        total = 0
+        for w in clause:
             txt = (w[4] or "").strip()
+            # Bare _INT_RE keeps list markers like "1." / "7." out of the
+            # sum: their period prevents the match, so even if MIN_THICK_MM
+            # is ever lowered we won't fold note-numbering into thicknesses.
             if not _INT_RE.match(txt):
                 continue
             val = int(txt)
             if _MIN_THICK_MM <= val <= _MAX_THICK_MM:
-                for nsp in nsp_tokens:
-                    legend[(nsp[4] or "").upper()] = float(val)
-                break
+                total += val
+        if total <= 0:
+            continue
+        for nsp in nsp_tokens:
+            legend[(nsp[4] or "").upper()] = float(total)
 
-    # Pass (b): self-describing codes record directly, no lookup needed.
+    # Self-describing codes record directly, no lookup needed.
     for w in block_words:
         m = _SELFDESC_RE.match((w[4] or "").strip())
         if m:
             legend[(w[4] or "").upper()] = float(m.group(1))
+
+
+def _split_clauses(block_words: list[tuple]) -> list[list[tuple]]:
+    """Partition NOTES words into clauses in reading order.
+
+    Standard path: a clause begins at every "ALL" keyword (each numbered
+    structural note begins with "ALL") and after any comma-terminated
+    token. This survives PyMuPDF line-wrapping (a wrapped fragment is on
+    a different line_no but still belongs to the same clause) and cleanly
+    separates "ALL NSP2 ..., ALL NSP5 ..." into independent clauses.
+
+    Fallback: if the block contains no "ALL" tokens (a drawing using
+    different phrasing), partition per PyMuPDF line so we don't sum
+    integers across unrelated rules into one polluted total.
+    """
+    ordered = sorted(block_words, key=lambda w: (w[5], w[6], w[0]))
+    has_all = any((w[4] or "").strip().upper() == "ALL" for w in ordered)
+    if not has_all:
+        lines: dict[tuple[int, int], list[tuple]] = {}
+        for w in ordered:
+            lines.setdefault((w[5], w[6]), []).append(w)
+        return list(lines.values())
+
+    clauses: list[list[tuple]] = []
+    current: list[tuple] = []
+    for w in ordered:
+        txt = (w[4] or "").strip()
+        if txt.upper() == "ALL":
+            if current:
+                clauses.append(current)
+            current = [w]
+            continue
+        current.append(w)
+        if txt.endswith(","):
+            clauses.append(current)
+            current = []
+    if current:
+        clauses.append(current)
+    return clauses
 
 
 def _in_any_rect(word: tuple, rects: list[tuple[float, float, float, float]]) -> bool:
