@@ -5,57 +5,86 @@ Runs on the Revit recipe *before* it is written to transaction.json and sent to
 the Windows machine.  No AI involved.  All fixes are geometric and rule-based.
 
 Passes (in order):
-  1. snap_and_filter_framing — snap beam endpoints to the nearest column's
-                               insertion point, then TRIM each endpoint inward
-                               by the column's half-dimension along the beam
-                               axis so the beam body stops at the column face
-                               (not its centre — which would otherwise clash
-                               half-column-width into the column body).
-                               REMOVE beams whose endpoints don't both land on
-                               a column (would float), whose endpoints snapped
-                               to the same column, whose post-snap axis
-                               deviates beyond AXIS_TOLERANCE_MM from X/Y
-                               (non-colinear columns), or whose span collapses
-                               below MIN_BEAM_MM after face-trim.
-  2. clamp_column_min_size   — ensure column width/depth >= COL_MIN_MM (200 mm).
-                               Revit auto-deletes families below this threshold.
+  1. snap_and_filter_framing
+        Pass A — perpendicular grid-line snap.
+            For each beam endpoint, shift it perpendicular to the beam axis
+            onto the nearest perpendicular grid line within half-grid-spacing.
+            Then anchor the endpoint to a column or core wall on that grid
+            intersection.  A beam normally sits *on* a grid line between two
+            columns, so this corrects YOLO drift without inventing geometry.
+        Pass B — dashline-confirmed extension (only on endpoints that didn't
+            anchor in Pass A).
+            If a dashed beam centreline in the vector data passes near the
+            floating endpoint AND aligns with the beam axis, walk outward in
+            grid-spacing steps (up to 4 if the other end is anchored, up to 2
+            if both ends float) and probe each step for a column, core wall,
+            or a closed rectangle the size of a column.  First hit wins.
+        Reject taxonomy:
+            no_dashline / dashline_no_anchor / out_of_grid /
+            same_column / duplicate_span / diagonal / too_short
+        Snapped beams are face-trimmed by the column half-dimension along the
+        beam axis so the body stops at the column face, not its centre.
+  2. clamp_column_min_size — ensure column width/depth >= COL_MIN_MM (200 mm).
+                             Revit auto-deletes families below this threshold.
 
-Thresholds are tunable via environment variables (defaults match SS CP 65 practice).
+Thresholds tunable via env vars (defaults match SS CP 65 practice).
 """
 from __future__ import annotations
 
 import math
 import os
 from collections import Counter
+from dataclasses import dataclass
 from loguru import logger
 
-_MIN_BEAM_MM:       float = float(os.getenv("MIN_BEAM_MM",       "500"))
-_SNAP_BUFFER_MM:    float = float(os.getenv("SNAP_BUFFER_MM",    "150"))
-_COL_MIN_MM:        float = float(os.getenv("COL_MIN_MM",        "200"))
-# After snapping both endpoints to column centres, the beam axis should be
-# either horizontal (dy≈0) or vertical (dx≈0). Allow small slop so near-colinear
-# columns (within this tolerance) still produce a valid beam.
-_AXIS_TOLERANCE_MM: float = float(os.getenv("AXIS_TOLERANCE_MM", "50"))
-# Secondary beams that frame into a primary beam (not a column) — if an endpoint
-# didn't snap to a column, try snapping it onto the centreline of a primary beam
-# that itself snapped to columns on both ends. Tighter than column snap because
-# a secondary's bbox end typically lands right on the primary's line.
-_BEAM_SNAP_MM:      float = float(os.getenv("BEAM_SNAP_MM",      "400"))
+from backend.services.intelligence.admittance.signals.dashline import _is_dashed
+from backend.services.intelligence.grid_coords import interp_sorted, grid_lines_world_mm
+
+_MIN_BEAM_MM:           float = float(os.getenv("MIN_BEAM_MM",       "500"))
+_COL_MIN_MM:            float = float(os.getenv("COL_MIN_MM",        "200"))
+_AXIS_TOLERANCE_MM:     float = float(os.getenv("AXIS_TOLERANCE_MM", "50"))
+_PERP_SNAP_FRACTION:    float = float(os.getenv("PERP_SNAP_FRACTION", "0.5"))
+_ALONG_ANCHOR_FRACTION: float = float(os.getenv("ALONG_ANCHOR_FRACTION", "0.5"))
+_STEP_ANCHOR_FRACTION:  float = float(os.getenv("STEP_ANCHOR_FRACTION", "0.25"))
+_DASHLINE_PROXIMITY_MM: float = float(os.getenv("DASHLINE_PROXIMITY_MM", "150"))
+# cos 25° ≈ 0.9 — tightens up against near-perpendicular noise.
+_DASHLINE_ALIGN_COS:    float = float(os.getenv("DASHLINE_ALIGN_COS", "0.9"))
+_EXT_BUDGET_ONE_FLOAT:  int   = int(os.getenv("EXT_BUDGET_ONE_FLOAT",  "4"))
+_EXT_BUDGET_BOTH_FLOAT: int   = int(os.getenv("EXT_BUDGET_BOTH_FLOAT", "2"))
+# Vector rectangles considered "column-shaped" within this mm band; anything
+# bigger is core wall / room / sheet border and skipped here.
+_RECT_MIN_MM:           float = 200.0
+_RECT_MAX_MM:           float = 1500.0
 
 
-def sanitize_recipe(recipe: dict) -> tuple[dict, list[str], list[dict]]:
+_ENDPOINT_KEYS = ("start_point", "end_point")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Public API
+# ──────────────────────────────────────────────────────────────────────────
+
+def sanitize_recipe(
+    recipe: dict,
+    grid_info: dict | None = None,
+    vector_data: dict | None = None,
+    image_data: dict | None = None,
+) -> tuple[dict, list[str], list[dict]]:
     """
     Apply all sanitization passes to *recipe* in-place.
 
-    Returns (recipe, actions, rejected). `rejected` is a list of
-    {id, reason, tag, original_start, original_end, snapped_keys} dicts —
-    one per framing beam dropped, with the PRE-snap mm endpoints so a caller
-    can overlay them on the source plan for diagnosis.
-    """
-    col_boxes = _col_centers(recipe)
+    grid_info / vector_data / image_data unlock the Pass A grid-line snap and
+    Pass B dashline-confirmed extension. Without them the sanitizer falls back
+    to a degenerate "anchor must already be a column" rule (legacy behaviour).
 
+    Returns (recipe, actions, rejected) — `rejected` contains pre-snap mm
+    endpoints so a caller can overlay them on the source plan for diagnosis.
+    """
     framing_in = len(recipe.get("structural_framing", []))
-    recipe, a1, drop_reasons, rejected = _snap_and_filter_framing(recipe, col_boxes)
+
+    ctx = _build_context(recipe, grid_info, vector_data, image_data)
+
+    recipe, a1, drop_reasons, rejected = _snap_and_filter_framing(recipe, ctx)
     recipe, a2 = _clamp_column_min_size(recipe)
 
     actions = a1 + a2
@@ -78,26 +107,461 @@ def sanitize_recipe(recipe: dict) -> tuple[dict, list[str], list[dict]]:
     return recipe, actions, rejected
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Context: grid lines, dashlines, rectangles, columns, core walls — all in mm.
+# ──────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class _Ctx:
+    columns:    list[tuple[float, float, float, float]]   # (cx, cy, half_w, half_d)
+    core_walls: list[list[tuple[float, float]]]           # polygons
+    rectangles: list[tuple[float, float, float, float]]   # (cx, cy, w, h) column-shaped
+    dashlines:  list[tuple[tuple[float, float], tuple[float, float]]]
+    x_lines:    list[float]                               # mm, ascending
+    y_lines:    list[float]                               # mm, world (Y-flipped, descending)
+    dx_grid:    float = 0.0
+    dy_grid:    float = 0.0
+
+    @property
+    def has_grid(self) -> bool:
+        return bool(self.x_lines and self.y_lines and self.dx_grid > 0 and self.dy_grid > 0)
+
+    @property
+    def grid_x_min(self) -> float:
+        return min(self.x_lines) if self.x_lines else float("-inf")
+
+    @property
+    def grid_x_max(self) -> float:
+        return max(self.x_lines) if self.x_lines else float("inf")
+
+    @property
+    def grid_y_min(self) -> float:
+        return min(self.y_lines) if self.y_lines else float("-inf")
+
+    @property
+    def grid_y_max(self) -> float:
+        return max(self.y_lines) if self.y_lines else float("inf")
+
+
+def _build_context(
+    recipe: dict,
+    grid_info: dict | None,
+    vector_data: dict | None,
+    image_data: dict | None,
+) -> _Ctx:
+    columns = _col_centers(recipe)
+    core_walls = _core_wall_polygons(recipe)
+    x_lines, y_lines, dx_grid, dy_grid = grid_lines_world_mm(grid_info)
+
+    dashlines:  list = []
+    rectangles: list = []
+    if x_lines and y_lines and vector_data and image_data:
+        dashlines, rectangles = _extract_vector_features_mm(
+            vector_data, grid_info, image_data,
+        )
+
+    return _Ctx(
+        columns=columns,
+        core_walls=core_walls,
+        rectangles=rectangles,
+        dashlines=dashlines,
+        x_lines=x_lines,
+        y_lines=y_lines,
+        dx_grid=dx_grid,
+        dy_grid=dy_grid,
+    )
+
+
 def _col_centers(recipe: dict) -> list[tuple[float, float, float, float]]:
-    """Return [(cx, cy, half_w, half_d), ...] for every column."""
-    result = []
+    out: list[tuple[float, float, float, float]] = []
     for col in recipe.get("columns", []):
         loc = col.get("location", {})
-        result.append((
+        out.append((
             float(loc.get("x", 0.0)),
             float(loc.get("y", 0.0)),
-            float(col.get("width",  800.0)) / 2.0,
-            float(col.get("depth",  800.0)) / 2.0,
+            float(col.get("width", 800.0)) / 2.0,
+            float(col.get("depth", 800.0)) / 2.0,
         ))
-    return result
+    return out
 
+
+def _core_wall_polygons(recipe: dict) -> list[list[tuple[float, float]]]:
+    out: list[list[tuple[float, float]]] = []
+    for cw in recipe.get("core_walls", []):
+        outline = cw.get("outline") or cw.get("polygon") or cw.get("points")
+        if not outline:
+            continue
+        pts: list[tuple[float, float]] = []
+        for p in outline:
+            if isinstance(p, dict):
+                pts.append((float(p.get("x", 0.0)), float(p.get("y", 0.0))))
+            elif isinstance(p, (list, tuple)) and len(p) >= 2:
+                pts.append((float(p[0]), float(p[1])))
+        if len(pts) >= 3:
+            out.append(pts)
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# pt → mm conversion (rotation-aware, mirrors grid_detector._to_image_coords).
+# ──────────────────────────────────────────────────────────────────────────
+
+def _make_pt_to_mm(grid_info: dict, vector_data: dict, image_data: dict):
+    """Return a closure (x_pt, y_pt) → (x_mm, y_mm) Y-flipped to match recipe."""
+    page_rect = vector_data.get("page_rect") or [0.0, 0.0, 0.0, 0.0]
+    rotation = int(vector_data.get("page_rotation", 0)) % 360
+    scale = float(image_data.get("dpi", 300)) / 72.0
+
+    page_x0 = float(page_rect[0])
+    page_y0 = float(page_rect[1])
+    page_w_pt = max(float(page_rect[2]) - page_x0, 1.0)
+    page_h_pt = max(float(page_rect[3]) - page_y0, 1.0)
+
+    # Pick the rotation transform once — avoids re-branching on every call
+    # (this closure runs hundreds of thousands of times on big plans).
+    if rotation == 90:
+        def pt_to_px(x_pt: float, y_pt: float) -> tuple[float, float]:
+            return (page_w_pt - (y_pt - page_y0)) * scale, (x_pt - page_x0) * scale
+    elif rotation == 180:
+        def pt_to_px(x_pt: float, y_pt: float) -> tuple[float, float]:
+            return (page_w_pt - (x_pt - page_x0)) * scale, (page_h_pt - (y_pt - page_y0)) * scale
+    elif rotation == 270:
+        def pt_to_px(x_pt: float, y_pt: float) -> tuple[float, float]:
+            return (y_pt - page_y0) * scale, (page_h_pt - (x_pt - page_x0)) * scale
+    else:
+        def pt_to_px(x_pt: float, y_pt: float) -> tuple[float, float]:
+            return (x_pt - page_x0) * scale, (y_pt - page_y0) * scale
+
+    x_lines_px = list(grid_info["x_lines_px"])
+    y_lines_px = list(grid_info["y_lines_px"])
+    x_sp = grid_info["x_spacings_mm"]
+    y_sp = grid_info["y_spacings_mm"]
+    x_world = [sum(x_sp[:i]) for i in range(len(x_lines_px))]
+    y_world_raw = [sum(y_sp[:i]) for i in range(len(y_lines_px))]
+    total_y = sum(y_sp)
+
+    def pt_to_mm(x_pt: float, y_pt: float) -> tuple[float, float]:
+        px, py = pt_to_px(x_pt, y_pt)
+        x_mm = interp_sorted(px, x_lines_px, x_world)
+        y_mm_raw = interp_sorted(py, y_lines_px, y_world_raw)
+        return x_mm, total_y - y_mm_raw
+
+    return pt_to_mm
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Vector feature extraction: dashlines + column-shaped rectangles, in mm.
+# ──────────────────────────────────────────────────────────────────────────
+
+def _extract_vector_features_mm(
+    vector_data: dict,
+    grid_info: dict,
+    image_data: dict,
+) -> tuple[
+    list[tuple[tuple[float, float], tuple[float, float]]],
+    list[tuple[float, float, float, float]],
+]:
+    """
+    Walk vector_data.paths once and split into:
+      - dashed line segments (beam centrelines), in mm
+      - closed rectangles sized like columns (200..1500 mm), in mm — used as
+        anchor candidates when YOLO/annotator missed a column
+    """
+    pt_to_mm = _make_pt_to_mm(grid_info, vector_data, image_data)
+    dashlines: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    rects:     list[tuple[float, float, float, float]] = []
+
+    # Pre-filter rectangles in pt-space before paying for two pt→mm conversions.
+    # Big plans contain ~100k paths (sheet borders, hatching, text glyphs);
+    # the mm filter would drop them anyway, but only after the conversion.
+    px_per_mm_x = float(grid_info.get("px_per_mm_x") or grid_info.get("pixels_per_mm") or 1.0)
+    px_per_mm_y = float(grid_info.get("px_per_mm_y") or grid_info.get("pixels_per_mm") or 1.0)
+    scale_pt_to_px = float(image_data.get("dpi", 300)) / 72.0
+    if px_per_mm_x > 0 and px_per_mm_y > 0 and scale_pt_to_px > 0:
+        mm_per_pt = scale_pt_to_px / max(px_per_mm_x, px_per_mm_y)
+        # Generous bounds — we want to prune obvious non-candidates, not borderline.
+        rect_pt_lo = (_RECT_MIN_MM / mm_per_pt) * 0.5
+        rect_pt_hi = (_RECT_MAX_MM / mm_per_pt) * 2.0
+    else:
+        rect_pt_lo, rect_pt_hi = 0.0, float("inf")
+
+    for path in vector_data.get("paths", []):
+        items = path.get("items") or []
+        is_dashed_path = _is_dashed(path.get("dashes"))
+        rect_obj = path.get("rect")
+
+        if rect_obj is not None:
+            try:
+                rx0 = float(rect_obj.x0 if hasattr(rect_obj, "x0") else rect_obj[0])
+                ry0 = float(rect_obj.y0 if hasattr(rect_obj, "y0") else rect_obj[1])
+                rx1 = float(rect_obj.x1 if hasattr(rect_obj, "x1") else rect_obj[2])
+                ry1 = float(rect_obj.y1 if hasattr(rect_obj, "y1") else rect_obj[3])
+            except (AttributeError, IndexError, TypeError, ValueError):
+                rx0 = rx1 = ry0 = ry1 = 0.0
+            if rx1 > rx0 and ry1 > ry0:
+                w_pt = rx1 - rx0
+                h_pt = ry1 - ry0
+                if (rect_pt_lo <= w_pt <= rect_pt_hi
+                        and rect_pt_lo <= h_pt <= rect_pt_hi):
+                    ax, ay = pt_to_mm(rx0, ry0)
+                    bx, by = pt_to_mm(rx1, ry1)
+                    w_mm = abs(bx - ax)
+                    h_mm = abs(by - ay)
+                    if (
+                        _RECT_MIN_MM <= w_mm <= _RECT_MAX_MM
+                        and _RECT_MIN_MM <= h_mm <= _RECT_MAX_MM
+                    ):
+                        rects.append(((ax + bx) / 2.0, (ay + by) / 2.0, w_mm, h_mm))
+
+        if is_dashed_path:
+            for item in items:
+                if not item or len(item) < 3 or item[0] != "l":
+                    continue
+                p1, p2 = item[1], item[2]
+                try:
+                    x1m, y1m = pt_to_mm(float(p1[0]), float(p1[1]))
+                    x2m, y2m = pt_to_mm(float(p2[0]), float(p2[1]))
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if math.hypot(x2m - x1m, y2m - y1m) < 1.0:
+                    continue
+                dashlines.append(((x1m, y1m), (x2m, y2m)))
+
+    logger.debug(
+        "RecipeSanitizer: vector features — {} dashed segment(s), "
+        "{} column-shaped rectangle(s)",
+        len(dashlines), len(rects),
+    )
+    return dashlines, rects
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Geometry helpers
+# ──────────────────────────────────────────────────────────────────────────
 
 def _dist2d(x1: float, y1: float, x2: float, y2: float) -> float:
     return math.hypot(x2 - x1, y2 - y1)
 
 
-_ENDPOINT_KEYS = ("start_point", "end_point")
+def _point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> bool:
+    inside = False
+    n = len(polygon)
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+        if ((yi > y) != (yj > y)) and (
+            x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi
+        ):
+            inside = not inside
+        j = i
+    return inside
 
+
+def _point_segment_dist(
+    px: float, py: float,
+    ax: float, ay: float,
+    bx: float, by: float,
+) -> float:
+    vx, vy = bx - ax, by - ay
+    L2 = vx * vx + vy * vy
+    if L2 < 1e-9:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * vx + (py - ay) * vy) / L2))
+    qx = ax + t * vx
+    qy = ay + t * vy
+    return math.hypot(px - qx, py - qy)
+
+
+def _beam_axis(dx: float, dy: float) -> str:
+    return "x" if abs(dx) >= abs(dy) else "y"
+
+
+def _has_dashline_near(
+    px: float, py: float,
+    axis: str,
+    ctx: _Ctx,
+) -> bool:
+    if not ctx.dashlines:
+        return False
+    axis_vx, axis_vy = (1.0, 0.0) if axis == "x" else (0.0, 1.0)
+    for (x1, y1), (x2, y2) in ctx.dashlines:
+        if _point_segment_dist(px, py, x1, y1, x2, y2) > _DASHLINE_PROXIMITY_MM:
+            continue
+        sx, sy = x2 - x1, y2 - y1
+        L = math.hypot(sx, sy)
+        if L < 1e-3:
+            continue
+        cos_angle = abs(sx * axis_vx + sy * axis_vy) / L
+        if cos_angle >= _DASHLINE_ALIGN_COS:
+            return True
+    return False
+
+
+def _find_column_anchor(
+    pt_x: float, pt_y: float,
+    ctx: _Ctx,
+    radius_x: float,
+    radius_y: float,
+) -> tuple[float, float, float, float] | None:
+    best: tuple[float, float, float, float] | None = None
+    best_d = float("inf")
+    for cx, cy, hw, hd in ctx.columns:
+        if abs(pt_x - cx) > radius_x or abs(pt_y - cy) > radius_y:
+            continue
+        d = _dist2d(pt_x, pt_y, cx, cy)
+        if d < best_d:
+            best_d = d
+            best = (cx, cy, hw, hd)
+    return best
+
+
+def _find_core_wall_anchor(pt_x: float, pt_y: float, ctx: _Ctx) -> bool:
+    for cw in ctx.core_walls:
+        if _point_in_polygon(pt_x, pt_y, cw):
+            return True
+    return False
+
+
+def _find_rectangle_anchor(
+    pt_x: float, pt_y: float,
+    ctx: _Ctx,
+    radius_x: float,
+    radius_y: float,
+) -> tuple[float, float] | None:
+    best: tuple[float, float] | None = None
+    best_d = float("inf")
+    for cx, cy, _, _ in ctx.rectangles:
+        if abs(pt_x - cx) > radius_x or abs(pt_y - cy) > radius_y:
+            continue
+        d = _dist2d(pt_x, pt_y, cx, cy)
+        if d < best_d:
+            best_d = d
+            best = (cx, cy)
+    return best
+
+
+def _has_out_of_grid_endpoint(original: dict, ctx: _Ctx) -> bool:
+    """True iff any pre-snap endpoint lies outside grid rect + 1-bay margin."""
+    for k in _ENDPOINT_KEYS:
+        ox = float(original.get(k, {}).get("x", 0.0))
+        oy = float(original.get(k, {}).get("y", 0.0))
+        if not (
+            ctx.grid_x_min - ctx.dx_grid <= ox <= ctx.grid_x_max + ctx.dx_grid
+            and ctx.grid_y_min - ctx.dy_grid <= oy <= ctx.grid_y_max + ctx.dy_grid
+        ):
+            return True
+    return False
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Pass A: perpendicular grid-line snap → column / core-wall anchor.
+# ──────────────────────────────────────────────────────────────────────────
+
+def _snap_pass_a(
+    pt: dict,
+    axis: str,
+    ctx: _Ctx,
+) -> tuple[str, tuple[float, float, float, float] | None]:
+    """
+    Mutate *pt* in place if anchored. Returns:
+      ("column",    col_tuple)
+      ("core_wall", None)
+      ("",          None)   — no anchor, fall through to Pass B
+    """
+    if not ctx.has_grid:
+        col = _find_column_anchor(pt["x"], pt["y"], ctx, 1000.0, 1000.0)
+        if col is not None:
+            pt["x"], pt["y"] = col[0], col[1]
+            return "column", col
+        return "", None
+
+    if _find_core_wall_anchor(pt["x"], pt["y"], ctx):
+        return "core_wall", None
+
+    if axis == "x":
+        perp_lines, spacing, coord_key = ctx.y_lines, ctx.dy_grid, "y"
+    else:
+        perp_lines, spacing, coord_key = ctx.x_lines, ctx.dx_grid, "x"
+
+    if not perp_lines or spacing <= 0:
+        return "", None
+
+    cur = pt[coord_key]
+    nearest = min(perp_lines, key=lambda v: abs(cur - v))
+    if abs(cur - nearest) > spacing * _PERP_SNAP_FRACTION:
+        return "", None
+    pt[coord_key] = nearest
+
+    if _find_core_wall_anchor(pt["x"], pt["y"], ctx):
+        return "core_wall", None
+
+    radius = max(ctx.dx_grid, ctx.dy_grid) * _ALONG_ANCHOR_FRACTION
+    col = _find_column_anchor(
+        pt["x"], pt["y"], ctx,
+        radius_x=radius if axis == "x" else ctx.dx_grid * 0.25,
+        radius_y=ctx.dy_grid * 0.25 if axis == "x" else radius,
+    )
+    if col is not None:
+        pt["x"], pt["y"] = col[0], col[1]
+        return "column", col
+
+    return "", None
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Pass B: dashline-confirmed extension. Pure geometry — caller formats logs.
+# ──────────────────────────────────────────────────────────────────────────
+
+def _snap_pass_b(
+    pt: dict,
+    axis: str,
+    direction_sign: float,
+    budget_units: int,
+    ctx: _Ctx,
+) -> tuple[str, tuple[float, float, float, float] | None, int]:
+    """
+    Walk outward, anchor on first hit. Mutates pt on success.
+
+    Returns (kind, anchor_or_None, n_steps):
+      ("column",    col_tuple,  n)
+      ("core_wall", None,       n)
+      ("rectangle", None,       n)
+      ("no_dashline",        None, 0)  — no dashline near pt; not a real beam
+      ("dashline_no_anchor", None, 0)  — confirmed but extension exhausted
+    """
+    if not _has_dashline_near(pt["x"], pt["y"], axis, ctx):
+        return "no_dashline", None, 0
+
+    step_x = ctx.dx_grid * direction_sign if axis == "x" else 0.0
+    step_y = ctx.dy_grid * direction_sign if axis == "y" else 0.0
+    rx = ctx.dx_grid * _STEP_ANCHOR_FRACTION
+    ry = ctx.dy_grid * _STEP_ANCHOR_FRACTION
+
+    for n in range(1, budget_units + 1):
+        probe_x = pt["x"] + step_x * n
+        probe_y = pt["y"] + step_y * n
+
+        col = _find_column_anchor(probe_x, probe_y, ctx, rx, ry)
+        if col is not None:
+            pt["x"], pt["y"] = col[0], col[1]
+            return "column", col, n
+
+        if _find_core_wall_anchor(probe_x, probe_y, ctx):
+            pt["x"], pt["y"] = probe_x, probe_y
+            return "core_wall", None, n
+
+        rect_hit = _find_rectangle_anchor(probe_x, probe_y, ctx, rx, ry)
+        if rect_hit is not None:
+            pt["x"], pt["y"] = rect_hit
+            return "rectangle", None, n
+
+    return "dashline_no_anchor", None, 0
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Snapshot + reject helpers
+# ──────────────────────────────────────────────────────────────────────────
 
 def _reject(
     actions: list[str],
@@ -118,151 +582,156 @@ def _reject(
         "original_start": original.get("start_point"),
         "original_end":   original.get("end_point"),
         "snapped_keys":   list(entry["snapped"].keys()),
+        "rescued_keys":   list(entry.get("rescued", {}).keys()),
     })
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Main pass — snap, anchor, validate, dedup, face-trim.
+# ──────────────────────────────────────────────────────────────────────────
+
 def _snap_and_filter_framing(
     recipe: dict,
-    centers: list[tuple[float, float, float, float]],
+    ctx: _Ctx,
 ) -> tuple[dict, list[str], Counter, list[dict]]:
-    """
-    Three passes over structural_framing:
-      1. Column snap — each endpoint within (col_half + _SNAP_BUFFER_MM) of a
-         column centre is moved onto that centre.
-      2. Beam-to-beam snap — endpoints that didn't hit a column in pass 1 are
-         projected onto the nearest *primary* beam's centreline (primary = both
-         ends snapped to columns), within _BEAM_SNAP_MM. Recovers secondaries.
-      3. Validate + face-trim + dedup. Rejects beams that fail any of:
-           - an endpoint still floating after both snap passes
-           - both endpoints snapped to the same point
-           - post-snap axis diagonal beyond _AXIS_TOLERANCE_MM
-           - duplicate span — same endpoints as an earlier kept beam
-           - span < _MIN_BEAM_MM after column-face trim
-         Column-snapped ends are trimmed inward by the column half-dimension so
-         the beam body stops at the face; beam-snapped ends keep their projected
-         position (beam lands on the primary's centreline).
-    """
     framing = recipe.get("structural_framing", [])
     actions:  list[str]  = []
     drops:    Counter    = Counter()
     rejected: list[dict] = []
     seen_pairs: set[frozenset[tuple[float, float]]] = set()
 
-    if not centers or not framing:
+    if not framing:
         return recipe, actions, drops, rejected
 
     per_beam: list[dict] = []
     for i, beam in enumerate(framing):
-        # Snapshot pre-snap endpoints for diagnostics before any mutation.
         original = {
             k: dict(beam[k]) for k in _ENDPOINT_KEYS
             if isinstance(beam.get(k), dict)
         }
         snapped: dict[str, tuple[float, float, float, float]] = {}
-        snap_actions: list[str] = []
-        for pt_key in _ENDPOINT_KEYS:
-            pt = beam.get(pt_key)
-            if not isinstance(pt, dict):
-                continue
-            px = float(pt.get("x", 0.0))
-            py = float(pt.get("y", 0.0))
-            best_col:  tuple[float, float, float, float] | None = None
-            best_dist: float = float("inf")
-            for cx, cy, hw, hd in centers:
-                if abs(px - cx) > hw + _SNAP_BUFFER_MM or abs(py - cy) > hd + _SNAP_BUFFER_MM:
-                    continue
-                d = _dist2d(px, py, cx, cy)
-                if d < best_dist:
-                    best_dist = d
-                    best_col  = (cx, cy, hw, hd)
-            if best_col:
-                cx, cy, _, _ = best_col
-                pt["x"] = cx
-                pt["y"] = cy
-                snapped[pt_key] = best_col
-                snap_actions.append(
+        beam_actions: list[str] = []
+
+        sp = beam.get("start_point")
+        ep = beam.get("end_point")
+        if not (isinstance(sp, dict) and isinstance(ep, dict)):
+            per_beam.append({
+                "beam": beam, "snapped": snapped, "actions": beam_actions,
+                "original": original, "rescued": {},
+            })
+            continue
+
+        dx_raw = float(ep.get("x", 0.0)) - float(sp.get("x", 0.0))
+        dy_raw = float(ep.get("y", 0.0)) - float(sp.get("y", 0.0))
+        axis = _beam_axis(dx_raw, dy_raw)
+
+        for pt_key, pt in (("start_point", sp), ("end_point", ep)):
+            kind, col = _snap_pass_a(pt, axis, ctx)
+            if kind == "column" and col is not None:
+                snapped[pt_key] = col
+                beam_actions.append(
                     f"framing[{i}].{pt_key} snapped to column @ "
-                    f"({cx:.0f}, {cy:.0f}) mm  [was {best_dist:.0f} mm away]"
+                    f"({col[0]:.0f}, {col[1]:.0f}) mm"
                 )
+            elif kind == "core_wall":
+                snapped[pt_key] = (pt["x"], pt["y"], 0.0, 0.0)
+                beam_actions.append(
+                    f"framing[{i}].{pt_key} anchored to core wall @ "
+                    f"({pt['x']:.0f}, {pt['y']:.0f}) mm"
+                )
+
         per_beam.append({
-            "beam": beam, "snapped": snapped, "actions": snap_actions,
-            "original": original,
+            "beam": beam, "snapped": snapped, "actions": beam_actions,
+            "original": original, "rescued": {}, "axis": axis,
         })
 
-    # --- Pass 2: beam-to-beam snap for endpoints that didn't find a column.
-    # Only snap onto beams whose *both* endpoints snapped to columns (primaries).
-    # Projection is perpendicular onto the primary's centreline, clamped to its
-    # span so a secondary can't extend past the primary.
-    primaries = [p for p in per_beam
-                 if "start_point" in p["snapped"] and "end_point" in p["snapped"]]
-
-    def _snap_to_primary(px: float, py: float) -> tuple[float, float, float] | None:
-        """Return (proj_x, proj_y, dist_mm) of the nearest primary centreline, or None."""
-        best: tuple[float, float, float] | None = None
-        best_d = _BEAM_SNAP_MM
-        for p in primaries:
-            b = p["beam"]
-            ax, ay = b["start_point"]["x"], b["start_point"]["y"]
-            bx, by = b["end_point"]["x"],   b["end_point"]["y"]
-            vx, vy = bx - ax, by - ay
-            L2 = vx * vx + vy * vy
-            if L2 < 1.0:
-                continue
-            t = ((px - ax) * vx + (py - ay) * vy) / L2
-            t = max(0.0, min(1.0, t))
-            qx = ax + t * vx
-            qy = ay + t * vy
-            d = math.hypot(px - qx, py - qy)
-            if d < best_d:
-                best_d = d
-                best = (qx, qy, d)
-        return best
-
+    # Pass B — extend floating endpoints along beam axis if a dashline confirms.
     for i, entry in enumerate(per_beam):
         beam = entry["beam"]
         snapped = entry["snapped"]
-        for pt_key in _ENDPOINT_KEYS:
-            if pt_key in snapped:
-                continue
-            pt = beam.get(pt_key)
-            if not isinstance(pt, dict):
-                continue
-            hit = _snap_to_primary(float(pt["x"]), float(pt["y"]))
-            if hit is None:
-                continue
-            qx, qy, d = hit
-            pt["x"] = qx
-            pt["y"] = qy
-            # Sentinel: half_w=half_d=0 means "snapped to beam, don't face-trim".
-            snapped[pt_key] = (qx, qy, 0.0, 0.0)
-            entry["actions"].append(
-                f"framing[{i}].{pt_key} snapped to primary beam centreline @ "
-                f"({qx:.0f}, {qy:.0f}) mm  [was {d:.0f} mm away]"
-            )
+        axis = entry.get("axis")
+        if axis is None:
+            continue
 
-    # --- Pass 3: validation, dedup, face-trim, keep list.
+        floating = [k for k in _ENDPOINT_KEYS if k not in snapped]
+        if not floating:
+            continue
+
+        budget = (
+            _EXT_BUDGET_ONE_FLOAT if len(floating) == 1
+            else _EXT_BUDGET_BOTH_FLOAT
+        )
+
+        sp = beam["start_point"]
+        ep = beam["end_point"]
+        for pt_key in floating:
+            pt = beam[pt_key]
+            other = ep if pt_key == "start_point" else sp
+            sign_axis = "x" if axis == "x" else "y"
+            sign = 1.0 if pt[sign_axis] >= other[sign_axis] else -1.0
+
+            kind, col, n_steps = _snap_pass_b(pt, axis, sign, budget, ctx)
+            if kind == "column" and col is not None:
+                snapped[pt_key] = col
+                entry["rescued"][pt_key] = "column"
+                entry["actions"].append(
+                    f"framing[{i}].{pt_key} extended {n_steps} grid unit(s) → "
+                    f"column @ ({col[0]:.0f}, {col[1]:.0f}) mm"
+                )
+            elif kind in ("core_wall", "rectangle"):
+                snapped[pt_key] = (pt["x"], pt["y"], 0.0, 0.0)
+                entry["rescued"][pt_key] = kind
+                entry["actions"].append(
+                    f"framing[{i}].{pt_key} extended {n_steps} grid unit(s) → "
+                    f"{kind} @ ({pt['x']:.0f}, {pt['y']:.0f}) mm"
+                )
+            else:
+                entry.setdefault("fail_tags", {})[pt_key] = kind
+
+    # Validate + dedup + face-trim + keep.
     kept: list[dict] = []
     for i, entry in enumerate(per_beam):
         beam = entry["beam"]
         snapped = entry["snapped"]
-        snap_actions = entry["actions"]
+        beam_actions = entry["actions"]
+        sp = beam.get("start_point")
+        ep = beam.get("end_point")
+
+        if not (isinstance(sp, dict) and isinstance(ep, dict)):
+            _reject(actions, i, "missing endpoint dict",
+                    "no_endpoints", drops, rejected, entry)
+            continue
+
+        if ctx.has_grid and _has_out_of_grid_endpoint(entry["original"], ctx):
+            _reject(actions, i,
+                "endpoint outside grid rect (would float in model)",
+                "out_of_grid", drops, rejected, entry)
+            continue
 
         missing = [k for k in _ENDPOINT_KEYS if k not in snapped]
         if missing:
-            _reject(actions, i,
-                f"{', '.join(missing)} not within {_SNAP_BUFFER_MM:.0f} mm of any column "
-                f"nor {_BEAM_SNAP_MM:.0f} mm of any primary beam (would float in model)",
-                "floating_endpoint", drops, rejected, entry)
+            fail_tags = entry.get("fail_tags") or {}
+            tag = fail_tags.get(missing[0]) or "no_dashline"
+            reason = (
+                "no dashline near floating endpoint — likely YOLO false positive"
+                if tag == "no_dashline"
+                else f"dashline confirmed but no anchor within "
+                     f"{_EXT_BUDGET_ONE_FLOAT}-grid-unit budget"
+            )
+            _reject(actions, i, reason, tag, drops, rejected, entry)
             continue
 
-        sp_col = snapped["start_point"]
-        ep_col = snapped["end_point"]
-        if sp_col[0] == ep_col[0] and sp_col[1] == ep_col[1]:
-            _reject(actions, i, "both endpoints snapped to the same column/beam point",
-                "same_column", drops, rejected, entry)
+        sp_anchor = snapped["start_point"]
+        ep_anchor = snapped["end_point"]
+        if sp_anchor[0] == ep_anchor[0] and sp_anchor[1] == ep_anchor[1]:
+            _reject(actions, i, "both endpoints snapped to the same point",
+                    "same_column", drops, rejected, entry)
             continue
 
-        pair_key = frozenset({(sp_col[0], sp_col[1]), (ep_col[0], ep_col[1])})
+        pair_key = frozenset({
+            (round(sp_anchor[0], 1), round(sp_anchor[1], 1)),
+            (round(ep_anchor[0], 1), round(ep_anchor[1], 1)),
+        })
         if pair_key in seen_pairs:
             _reject(actions, i,
                 "duplicate span — another beam already snapped to the same endpoints",
@@ -270,30 +739,24 @@ def _snap_and_filter_framing(
             continue
         seen_pairs.add(pair_key)
 
-        sp, ep = beam["start_point"], beam["end_point"]
         dx = ep["x"] - sp["x"]
         dy = ep["y"] - sp["y"]
-
         if min(abs(dx), abs(dy)) > _AXIS_TOLERANCE_MM:
             _reject(actions, i,
                 f"diagonal beam after snap (dx={dx:.0f}mm, dy={dy:.0f}mm > "
-                f"tolerance {_AXIS_TOLERANCE_MM:.0f}mm); endpoints are not colinear",
+                f"tolerance {_AXIS_TOLERANCE_MM:.0f}mm)",
                 "diagonal", drops, rejected, entry)
             continue
 
-        # Face-trim only where the endpoint snapped to a column (half_w/half_d > 0).
-        # Beam-to-beam endpoints keep their projected position (beam lands on the
-        # primary's centreline — no face offset needed).
+        # Face-trim only on column-anchored ends (half_w/half_d > 0).
         axis_is_x = abs(dx) >= abs(dy)
         if axis_is_x:
-            sp_half = sp_col[2]
-            ep_half = ep_col[2]
+            sp_half, ep_half = sp_anchor[2], ep_anchor[2]
             direction = 1.0 if dx > 0 else -1.0
             sp["x"] += direction * sp_half
             ep["x"] -= direction * ep_half
         else:
-            sp_half = sp_col[3]
-            ep_half = ep_col[3]
+            sp_half, ep_half = sp_anchor[3], ep_anchor[3]
             direction = 1.0 if dy > 0 else -1.0
             sp["y"] += direction * sp_half
             ep["y"] -= direction * ep_half
@@ -302,18 +765,18 @@ def _snap_and_filter_framing(
         if length < _MIN_BEAM_MM:
             _reject(actions, i,
                 f"span {length:.0f} mm after face trim < minimum "
-                f"{_MIN_BEAM_MM:.0f} mm (endpoints too close along beam axis)",
+                f"{_MIN_BEAM_MM:.0f} mm",
                 "too_short", drops, rejected, entry)
             continue
 
         if sp_half or ep_half:
-            snap_actions.append(
+            beam_actions.append(
                 f"framing[{i}] trimmed to column faces "
                 f"(−{sp_half:.0f} mm start, −{ep_half:.0f} mm end)"
             )
 
         kept.append(beam)
-        actions.extend(snap_actions)
+        actions.extend(beam_actions)
 
     recipe["structural_framing"] = kept
     return recipe, actions, drops, rejected
@@ -323,9 +786,11 @@ def _clamp_column_min_size(recipe: dict) -> tuple[dict, list[str]]:
     """Clamp column width/depth to _COL_MIN_MM (Revit rejects families below 200 mm)."""
     actions: list[str] = []
     for i, col in enumerate(recipe.get("columns", [])):
-        for field in ("width", "depth"):
-            v = float(col.get(field, 800.0))
+        for field_name in ("width", "depth"):
+            v = float(col.get(field_name, 800.0))
             if v < _COL_MIN_MM:
-                col[field] = _COL_MIN_MM
-                actions.append(f"column[{i}].{field} clamped {v:.0f} → {_COL_MIN_MM:.0f} mm")
+                col[field_name] = _COL_MIN_MM
+                actions.append(
+                    f"column[{i}].{field_name} clamped {v:.0f} → {_COL_MIN_MM:.0f} mm"
+                )
     return recipe, actions

@@ -462,7 +462,12 @@ class PipelineOrchestrator:
             # Fix known geometry problems (beam-column overlaps, short beams,
             # undersized columns) before the recipe reaches the Windows machine.
             framing_before_sanitize = len(recipe.get("structural_framing", []))
-            recipe, sanitizer_actions, sanitizer_rejected = sanitize_recipe(recipe)
+            recipe, sanitizer_actions, sanitizer_rejected = sanitize_recipe(
+                recipe,
+                grid_info=grid_info,
+                vector_data=vector_data,
+                image_data=image_data,
+            )
             if sanitizer_actions:
                 framing_after_sanitize = len(recipe.get("structural_framing", []))
                 emit(observer.warn(job_id, "pre_export_sanitizer", {

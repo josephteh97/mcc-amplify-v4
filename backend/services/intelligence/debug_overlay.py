@@ -19,6 +19,7 @@ import numpy as np
 from loguru import logger
 
 from backend.services.intelligence.admittance import ADMIT_WITH_FIX, REJECT
+from backend.services.intelligence.grid_coords import interp_sorted
 
 
 def save_join_conflict_overlay(
@@ -76,12 +77,21 @@ def save_join_conflict_overlay(
 
 # Per-tag colour (BGR) so the rejection reason is visible at a glance.
 _REJECT_COLORS = {
-    "floating_endpoint": (0,   0,   255),  # red
-    "same_column":       (0,   140, 255),  # orange
-    "duplicate_span":    (255, 0,   255),  # magenta
-    "diagonal":          (0,   255, 255),  # yellow
-    "too_short":         (255, 255, 0),    # cyan
+    "no_dashline":         (0,   0,   255),  # red    — likely YOLO false positive
+    "dashline_no_anchor":  (0,   140, 255),  # orange — real beam, no column found
+    "out_of_grid":         (128, 0,   128),  # purple — endpoint outside grid rect
+    "same_column":         (0,   200, 200),  # mustard
+    "duplicate_span":      (255, 0,   255),  # magenta
+    "diagonal":            (0,   255, 255),  # yellow
+    "too_short":           (255, 255, 0),    # cyan
+    "no_endpoints":        (128, 128, 128),  # grey
+    # Legacy tag (pre-grid-aware sanitizer); kept so old debug runs still render.
+    "floating_endpoint":   (0,   0,   255),
 }
+
+
+_PASS_A_COLOR = (0, 200, 0)        # green
+_PASS_B_COLOR = (255, 140, 0)       # blue (BGR)
 
 
 def save_sanitizer_rejected_overlay(
@@ -95,10 +105,11 @@ def save_sanitizer_rejected_overlay(
     Each rejected entry carries original (pre-snap) mm endpoints. We convert
     back to image pixels via grid_info and draw:
       - coloured line between the two endpoints (colour = reason tag)
-      - small dot on each endpoint; a HOLLOW dot marks the endpoint(s) that
-        failed to snap (the "floating" side) so secondary-onto-secondary and
-        column-miss cases are distinguishable at a glance
-      - short "<id>:<tag>" label
+      - per endpoint:
+          GREEN filled dot  = Pass A column / core-wall snap succeeded
+          BLUE  filled dot  = Pass B dashline-confirmed extension succeeded
+          HOLLOW dot in reject colour = endpoint floated (no anchor)
+      - short "<id>:<tag>" label (reject reason)
     """
     if not rejected:
         return 0
@@ -112,14 +123,19 @@ def save_sanitizer_rejected_overlay(
         return 0
 
     # World-mm position of each grid line (matches geometry_generator._px_to_world).
+    # X is already ascending; Y is descending after the world-flip — re-pair-sort
+    # the Y axis so interp_sorted's bisect can use it.
     x_world = [sum(x_sp[:i]) for i in range(len(x_lines_px))]
     total_y = sum(y_sp)
     y_world = [total_y - sum(y_sp[:i]) for i in range(len(y_lines_px))]
+    y_pairs = sorted(zip(y_world, y_lines_px))
+    y_world_asc  = [p[0] for p in y_pairs]
+    y_px_by_y_mm = [p[1] for p in y_pairs]
 
     def _mm_to_px(xm: float, ym: float) -> tuple[int, int]:
         return (
-            int(round(_interp(xm, x_world, x_lines_px))),
-            int(round(_interp(ym, y_world, y_lines_px))),
+            int(round(interp_sorted(xm, x_world,      x_lines_px))),
+            int(round(interp_sorted(ym, y_world_asc,  y_px_by_y_mm))),
         )
 
     overlay = image.copy() if image.ndim == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
@@ -135,9 +151,14 @@ def save_sanitizer_rejected_overlay(
         cv2.line(overlay, (x1, y1), (x2, y2), color, 3)
 
         snapped = set(r.get("snapped_keys", []))
+        rescued = set(r.get("rescued_keys", []))
         for key, (xx, yy) in (("start_point", (x1, y1)), ("end_point", (x2, y2))):
-            cv2.circle(overlay, (xx, yy), 10, color,
-                       thickness=-1 if key in snapped else 3)
+            if key in rescued:
+                cv2.circle(overlay, (xx, yy), 10, _PASS_B_COLOR, thickness=-1)
+            elif key in snapped:
+                cv2.circle(overlay, (xx, yy), 10, _PASS_A_COLOR, thickness=-1)
+            else:
+                cv2.circle(overlay, (xx, yy), 10, color, thickness=3)
 
         label = f"{r.get('id', '?')}:{tag}"
         cv2.putText(overlay, label, (min(x1, x2), max(0, min(y1, y2) - 8)),
@@ -153,23 +174,3 @@ def save_sanitizer_rejected_overlay(
     return drawn
 
 
-def _interp(v: float, xs: list[float], ys: list[int]) -> float:
-    """Piecewise-linear interpolate v through (xs -> ys). xs need not be sorted."""
-    pairs = sorted(zip(xs, ys), key=lambda p: p[0])
-    xs_s = [p[0] for p in pairs]
-    ys_s = [p[1] for p in pairs]
-    if v <= xs_s[0]:
-        x0, x1 = xs_s[0], xs_s[1]
-        y0, y1 = ys_s[0], ys_s[1]
-    elif v >= xs_s[-1]:
-        x0, x1 = xs_s[-2], xs_s[-1]
-        y0, y1 = ys_s[-2], ys_s[-1]
-    else:
-        i = 1
-        while i < len(xs_s) and xs_s[i] < v:
-            i += 1
-        x0, x1 = xs_s[i - 1], xs_s[i]
-        y0, y1 = ys_s[i - 1], ys_s[i]
-    if x1 == x0:
-        return float(y0)
-    return y0 + (y1 - y0) * (v - x0) / (x1 - x0)
