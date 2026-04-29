@@ -73,6 +73,7 @@ def run_yolo(
     min_squareness: float = 0.75,
     min_side: int = 10,
     max_side: int = 80,
+    imgsz: int | None = None,
 ) -> list:
     """
     Tiling YOLO inference on a rendered PDF image.
@@ -82,7 +83,7 @@ def run_yolo(
     yolo_model      : loaded YOLO model (or None → returns [])
     image_data      : dict with "image" (H×W×3 uint8), "width", "height", "dpi"
     element_type    : element type label written into each detection dict
-    tile_size       : tile side in pixels
+    tile_size       : tile side in pixels (sliding-window crop size)
     overlap         : overlap between tiles in pixels
     conf            : confidence threshold
     iou             : NMS IoU threshold
@@ -90,11 +91,18 @@ def run_yolo(
     min_squareness  : min(w,h)/max(w,h) filter; set 0.0 to disable (e.g. for beams)
     min_side        : minimum bbox side in pixels after scaling
     max_side        : maximum bbox side in pixels after scaling
+    imgsz           : YOLO network input resolution. Must match the model's
+                      training imgsz (column=1280, framing=640). Defaults to
+                      tile_size (the column model's training imgsz). Mismatch
+                      tanks recall — beams trained at 640 but inferred at 1280
+                      appear ~2× larger than the network learned to recognise.
 
     Returns
     -------
     list of detection dicts in original pixel space.
     """
+    if imgsz is None:
+        imgsz = tile_size
     if yolo_model is None or image_data is None:
         return []
     try:
@@ -143,7 +151,7 @@ def run_yolo(
                 tile = pil_img.crop((xa, ya, x1, y1))
 
                 res = yolo_model.predict(
-                    source=tile, imgsz=tile_size,
+                    source=tile, imgsz=imgsz,
                     conf=conf, iou=iou, verbose=False,
                 )[0]
 

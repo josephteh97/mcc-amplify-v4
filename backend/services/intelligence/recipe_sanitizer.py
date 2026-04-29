@@ -46,7 +46,14 @@ _AXIS_TOLERANCE_MM:     float = float(os.getenv("AXIS_TOLERANCE_MM", "50"))
 _PERP_SNAP_FRACTION:    float = float(os.getenv("PERP_SNAP_FRACTION", "0.5"))
 _ALONG_ANCHOR_FRACTION: float = float(os.getenv("ALONG_ANCHOR_FRACTION", "0.5"))
 _STEP_ANCHOR_FRACTION:  float = float(os.getenv("STEP_ANCHOR_FRACTION", "0.25"))
-_DASHLINE_PROXIMITY_MM: float = float(os.getenv("DASHLINE_PROXIMITY_MM", "150"))
+# Tight perpendicular tolerance — beam should sit ON the dashline. Stops us
+# catching the dashline of a parallel beam one grid line over.
+_DASHLINE_PERP_MM:      float = float(os.getenv("DASHLINE_PERP_MM",      "150"))
+# Longitudinal slack as a fraction of beam width — covers cases where YOLO
+# over-extends the bbox slightly past the centreline tip.
+_DASHLINE_LONG_FRACTION: float = float(os.getenv("DASHLINE_LONG_FRACTION", "0.5"))
+# Default beam width when the recipe entry omits it (matches geometry_generator).
+_DEFAULT_BEAM_WIDTH_MM:  float = float(os.getenv("DEFAULT_BEAM_WIDTH_MM", "800"))
 # cos 25° ≈ 0.9 — tightens up against near-perpendicular noise.
 _DASHLINE_ALIGN_COS:    float = float(os.getenv("DASHLINE_ALIGN_COS", "0.9"))
 _EXT_BUDGET_ONE_FLOAT:  int   = int(os.getenv("EXT_BUDGET_ONE_FLOAT",  "4"))
@@ -116,7 +123,12 @@ class _Ctx:
     columns:    list[tuple[float, float, float, float]]   # (cx, cy, half_w, half_d)
     core_walls: list[list[tuple[float, float]]]           # polygons
     rectangles: list[tuple[float, float, float, float]]   # (cx, cy, w, h) column-shaped
-    dashlines:  list[tuple[tuple[float, float], tuple[float, float]]]
+    # Beam-axis-aligned dashed segments, pre-bucketed by orientation so the hot
+    # path is a pure interval + perpendicular-band check (no sqrt / cos test).
+    # Each entry: (long_lo, long_hi, perp). Diagonal dashlines are dropped at
+    # extract time — they can't confirm a beam axis.
+    dashlines_x: list[tuple[float, float, float]]         # axis="x": long=x, perp=y
+    dashlines_y: list[tuple[float, float, float]]         # axis="y": long=y, perp=x
     x_lines:    list[float]                               # mm, ascending
     y_lines:    list[float]                               # mm, world (Y-flipped, descending)
     dx_grid:    float = 0.0
@@ -153,10 +165,11 @@ def _build_context(
     core_walls = _core_wall_polygons(recipe)
     x_lines, y_lines, dx_grid, dy_grid = grid_lines_world_mm(grid_info)
 
-    dashlines:  list = []
-    rectangles: list = []
+    dashlines_x: list = []
+    dashlines_y: list = []
+    rectangles:  list = []
     if x_lines and y_lines and vector_data and image_data:
-        dashlines, rectangles = _extract_vector_features_mm(
+        dashlines_x, dashlines_y, rectangles = _extract_vector_features_mm(
             vector_data, grid_info, image_data,
         )
 
@@ -164,7 +177,8 @@ def _build_context(
         columns=columns,
         core_walls=core_walls,
         rectangles=rectangles,
-        dashlines=dashlines,
+        dashlines_x=dashlines_x,
+        dashlines_y=dashlines_y,
         x_lines=x_lines,
         y_lines=y_lines,
         dx_grid=dx_grid,
@@ -258,18 +272,25 @@ def _extract_vector_features_mm(
     grid_info: dict,
     image_data: dict,
 ) -> tuple[
-    list[tuple[tuple[float, float], tuple[float, float]]],
+    list[tuple[float, float, float]],
+    list[tuple[float, float, float]],
     list[tuple[float, float, float, float]],
 ]:
     """
     Walk vector_data.paths once and split into:
-      - dashed line segments (beam centrelines), in mm
+      - dashed line segments (beam centrelines), bucketed by orientation:
+          dashlines_x: aligned with x-axis  (long_lo, long_hi, perp_y)
+          dashlines_y: aligned with y-axis  (long_lo, long_hi, perp_x)
+        Diagonal segments are dropped — they can't confirm a beam axis.
       - closed rectangles sized like columns (200..1500 mm), in mm — used as
         anchor candidates when YOLO/annotator missed a column
     """
     pt_to_mm = _make_pt_to_mm(grid_info, vector_data, image_data)
-    dashlines: list[tuple[tuple[float, float], tuple[float, float]]] = []
-    rects:     list[tuple[float, float, float, float]] = []
+    dashlines_x: list[tuple[float, float, float]] = []
+    dashlines_y: list[tuple[float, float, float]] = []
+    rects:       list[tuple[float, float, float, float]] = []
+    # Squared-form alignment threshold so we can classify by axis without sqrt.
+    align_cos2 = _DASHLINE_ALIGN_COS * _DASHLINE_ALIGN_COS
 
     # Pre-filter rectangles in pt-space before paying for two pt→mm conversions.
     # Big plans contain ~100k paths (sheet borders, hatching, text glyphs);
@@ -323,16 +344,26 @@ def _extract_vector_features_mm(
                     x2m, y2m = pt_to_mm(float(p2[0]), float(p2[1]))
                 except (TypeError, ValueError, IndexError):
                     continue
-                if math.hypot(x2m - x1m, y2m - y1m) < 1.0:
+                dx = x2m - x1m
+                dy = y2m - y1m
+                L2 = dx * dx + dy * dy
+                if L2 < 1.0:
                     continue
-                dashlines.append(((x1m, y1m), (x2m, y2m)))
+                # Bucket by orientation: cos²(angle) = component² / L².
+                # x-aligned ⇒ |dx|/L ≥ ALIGN ⇒ dx² ≥ ALIGN² · L².
+                if dx * dx >= align_cos2 * L2:
+                    lo, hi = (x1m, x2m) if x1m <= x2m else (x2m, x1m)
+                    dashlines_x.append((lo, hi, (y1m + y2m) * 0.5))
+                elif dy * dy >= align_cos2 * L2:
+                    lo, hi = (y1m, y2m) if y1m <= y2m else (y2m, y1m)
+                    dashlines_y.append((lo, hi, (x1m + x2m) * 0.5))
 
     logger.debug(
-        "RecipeSanitizer: vector features — {} dashed segment(s), "
-        "{} column-shaped rectangle(s)",
-        len(dashlines), len(rects),
+        "RecipeSanitizer: vector features — {} x-aligned + {} y-aligned dashed "
+        "segment(s), {} column-shaped rectangle(s)",
+        len(dashlines_x), len(dashlines_y), len(rects),
     )
-    return dashlines, rects
+    return dashlines_x, dashlines_y, rects
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -380,20 +411,30 @@ def _beam_axis(dx: float, dy: float) -> str:
 def _has_dashline_near(
     px: float, py: float,
     axis: str,
+    beam_width_mm: float,
     ctx: _Ctx,
 ) -> bool:
-    if not ctx.dashlines:
+    """
+    Look for a beam centreline (dashed) that the endpoint sits on.
+
+    The endpoint may extend up to half a beam width *past* either segment tip
+    along the longitudinal direction (covers YOLO bboxes that overshoot the
+    centreline) but must stay tight in the perpendicular direction (so we
+    don't pick up a parallel beam's centreline one grid line over).
+    """
+    if axis == "x":
+        segments = ctx.dashlines_x
+        long_pos, perp_pos = px, py
+    else:
+        segments = ctx.dashlines_y
+        long_pos, perp_pos = py, px
+    if not segments:
         return False
-    axis_vx, axis_vy = (1.0, 0.0) if axis == "x" else (0.0, 1.0)
-    for (x1, y1), (x2, y2) in ctx.dashlines:
-        if _point_segment_dist(px, py, x1, y1, x2, y2) > _DASHLINE_PROXIMITY_MM:
+    long_slack = beam_width_mm * _DASHLINE_LONG_FRACTION
+    for seg_lo, seg_hi, seg_perp in segments:
+        if abs(perp_pos - seg_perp) > _DASHLINE_PERP_MM:
             continue
-        sx, sy = x2 - x1, y2 - y1
-        L = math.hypot(sx, sy)
-        if L < 1e-3:
-            continue
-        cos_angle = abs(sx * axis_vx + sy * axis_vy) / L
-        if cos_angle >= _DASHLINE_ALIGN_COS:
+        if seg_lo - long_slack <= long_pos <= seg_hi + long_slack:
             return True
     return False
 
@@ -518,6 +559,7 @@ def _snap_pass_b(
     axis: str,
     direction_sign: float,
     budget_units: int,
+    beam_width_mm: float,
     ctx: _Ctx,
 ) -> tuple[str, tuple[float, float, float, float] | None, int]:
     """
@@ -530,7 +572,7 @@ def _snap_pass_b(
       ("no_dashline",        None, 0)  — no dashline near pt; not a real beam
       ("dashline_no_anchor", None, 0)  — confirmed but extension exhausted
     """
-    if not _has_dashline_near(pt["x"], pt["y"], axis, ctx):
+    if not _has_dashline_near(pt["x"], pt["y"], axis, beam_width_mm, ctx):
         return "no_dashline", None, 0
 
     step_x = ctx.dx_grid * direction_sign if axis == "x" else 0.0
@@ -640,6 +682,31 @@ def _snap_and_filter_framing(
                     f"({pt['x']:.0f}, {pt['y']:.0f}) mm"
                 )
 
+        # Both endpoints landed on the same column — un-snap the one whose
+        # original position was further from the column centre and let Pass B
+        # extend it in the opposite direction to find a different anchor.
+        # We restore the original *along-axis* coordinate (so direction is
+        # recoverable) but keep the perpendicular grid-line alignment so
+        # Pass B's narrow probe radius can still find columns.
+        sp_col = snapped.get("start_point")
+        ep_col = snapped.get("end_point")
+        if (
+            sp_col is not None and ep_col is not None
+            and sp_col[0] == ep_col[0] and sp_col[1] == ep_col[1]
+            and sp_col[2] > 0 and ep_col[2] > 0
+        ):
+            cx, cy = sp_col[0], sp_col[1]
+            d_sp = _dist2d(original["start_point"]["x"], original["start_point"]["y"], cx, cy)
+            d_ep = _dist2d(original["end_point"]["x"],   original["end_point"]["y"],   cx, cy)
+            unsnap_key = "start_point" if d_sp >= d_ep else "end_point"
+            along_key = "x" if axis == "x" else "y"
+            beam[unsnap_key][along_key] = original[unsnap_key][along_key]
+            del snapped[unsnap_key]
+            beam_actions.append(
+                f"framing[{i}].{unsnap_key} un-snapped (would collapse onto same column "
+                f"as the other end) — deferred to Pass B"
+            )
+
         per_beam.append({
             "beam": beam, "snapped": snapped, "actions": beam_actions,
             "original": original, "rescued": {}, "axis": axis,
@@ -664,13 +731,14 @@ def _snap_and_filter_framing(
 
         sp = beam["start_point"]
         ep = beam["end_point"]
+        beam_width_mm = float(beam.get("width") or _DEFAULT_BEAM_WIDTH_MM)
         for pt_key in floating:
             pt = beam[pt_key]
             other = ep if pt_key == "start_point" else sp
             sign_axis = "x" if axis == "x" else "y"
             sign = 1.0 if pt[sign_axis] >= other[sign_axis] else -1.0
 
-            kind, col, n_steps = _snap_pass_b(pt, axis, sign, budget, ctx)
+            kind, col, n_steps = _snap_pass_b(pt, axis, sign, budget, beam_width_mm, ctx)
             if kind == "column" and col is not None:
                 snapped[pt_key] = col
                 entry["rescued"][pt_key] = "column"

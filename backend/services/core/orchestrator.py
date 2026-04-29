@@ -105,6 +105,7 @@ class PipelineOrchestrator:
             load_yolo(weights / "structural-framing-detect.pt"), "structural_framing",
             min_squareness=0.0,   # beams are rectangular, not square
             max_side=300,
+            imgsz=640,            # framing model trained at 640 (column at 1280)
         )
         self.wall_agent  = UntrainedDetectionAgent("wall")    # walls extracted by fusion pipeline
         self.stairs_agent = UntrainedDetectionAgent("stairs")

@@ -1,11 +1,15 @@
 """
 YoloDetectionAgent — generic tiling-YOLO detection for any structural element type.
 
-Parameterise at construction time with the element type label and the filter
-thresholds appropriate for that element's shape:
+Parameterise at construction time with the element type label, the filter
+thresholds appropriate for that element's shape, and the network imgsz that
+matches the model's training resolution:
 
-  column:             min_squareness=0.75  max_side=80   (square, small)
-  structural_framing: min_squareness=0.0   max_side=300  (rectangular, longer)
+  column:             imgsz=1280  min_squareness=0.75  max_side=80   (square, small)
+  structural_framing: imgsz=640   min_squareness=0.0   max_side=300  (rectangular, longer)
+
+imgsz must match training — running a 640-trained model at 1280 makes objects
+appear ~2× larger than what the network learned and tanks recall.
 """
 from __future__ import annotations
 import asyncio
@@ -29,6 +33,7 @@ class YoloDetectionAgent(DetectionAgent):
         min_squareness: float = 0.75,
         min_side: int = 10,
         max_side: int = 80,
+        imgsz: int | None = None,
     ):
         self.element_type = element_type
         self._yolo = yolo_model
@@ -36,6 +41,7 @@ class YoloDetectionAgent(DetectionAgent):
             "min_squareness": min_squareness,
             "min_side":       min_side,
             "max_side":       max_side,
+            "imgsz":          imgsz,
         }
 
     async def detect(self, ctx: DetectionContext) -> list[dict]:
