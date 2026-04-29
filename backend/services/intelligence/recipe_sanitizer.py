@@ -683,13 +683,15 @@ def _snap_and_filter_framing(
                 )
 
         # Both endpoints landed on the same column — un-snap the one whose
-        # original position was further from the column centre and let Pass B
-        # extend it in the opposite direction to find a different anchor.
-        # We restore the original *along-axis* coordinate (so direction is
-        # recoverable) but keep the perpendicular grid-line alignment so
-        # Pass B's narrow probe radius can still find columns.
+        # original position was further from the column centre. Leave its
+        # coordinates at the column centre (a real grid intersection) so
+        # Pass B's `pt + n·grid_spacing` probes land cleanly on neighbouring
+        # column positions. The natural sign-from-pt-vs-other computation can't
+        # tell which way to walk (both endpoints share the column position),
+        # so we capture the direction here from the original endpoint.
         sp_col = snapped.get("start_point")
         ep_col = snapped.get("end_point")
+        rescue_dir: dict[str, float] = {}
         if (
             sp_col is not None and ep_col is not None
             and sp_col[0] == ep_col[0] and sp_col[1] == ep_col[1]
@@ -699,17 +701,20 @@ def _snap_and_filter_framing(
             d_sp = _dist2d(original["start_point"]["x"], original["start_point"]["y"], cx, cy)
             d_ep = _dist2d(original["end_point"]["x"],   original["end_point"]["y"],   cx, cy)
             unsnap_key = "start_point" if d_sp >= d_ep else "end_point"
-            along_key = "x" if axis == "x" else "y"
-            beam[unsnap_key][along_key] = original[unsnap_key][along_key]
+            col_along = cx if axis == "x" else cy
+            rescue_dir[unsnap_key] = (
+                1.0 if original[unsnap_key][axis] >= col_along else -1.0
+            )
             del snapped[unsnap_key]
             beam_actions.append(
                 f"framing[{i}].{unsnap_key} un-snapped (would collapse onto same column "
-                f"as the other end) — deferred to Pass B"
+                f"as the other end) — deferred to Pass B for outward grid walk"
             )
 
         per_beam.append({
             "beam": beam, "snapped": snapped, "actions": beam_actions,
             "original": original, "rescued": {}, "axis": axis,
+            "rescue_dir": rescue_dir,
         })
 
     # Pass B — extend floating endpoints along beam axis if a dashline confirms.
@@ -732,11 +737,15 @@ def _snap_and_filter_framing(
         sp = beam["start_point"]
         ep = beam["end_point"]
         beam_width_mm = float(beam.get("width") or _DEFAULT_BEAM_WIDTH_MM)
+        rescue_dir = entry.get("rescue_dir") or {}
         for pt_key in floating:
             pt = beam[pt_key]
             other = ep if pt_key == "start_point" else sp
-            sign_axis = "x" if axis == "x" else "y"
-            sign = 1.0 if pt[sign_axis] >= other[sign_axis] else -1.0
+            override = rescue_dir.get(pt_key)
+            if override is not None:
+                sign = override
+            else:
+                sign = 1.0 if pt[axis] >= other[axis] else -1.0
 
             kind, col, n_steps = _snap_pass_b(pt, axis, sign, budget, beam_width_mm, ctx)
             if kind == "column" and col is not None:
